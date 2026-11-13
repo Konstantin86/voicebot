@@ -7,6 +7,7 @@ import os
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -16,7 +17,8 @@ log = logging.getLogger(__name__)
 
 URL = "https://api.tavily.com/search"
 TIMEOUT_SECONDS = 8
-MAX_SNIPPET_CHARS = 400
+MAX_SNIPPET_CHARS = 600
+CHUNKS_PER_RESULT = 2
 REUSE_SECONDS = 30
 SIMILARITY = 0.6
 
@@ -39,6 +41,21 @@ def similar(a: frozenset[str], b: frozenset[str]) -> bool:
         return a == b
     return len(a & b) / len(a | b) >= SIMILARITY
 
+
+# Ukrainian shops and price comparison sites, preferred (not required) for shopping searches.
+SHOP_SITES = [
+    "hotline.ua", "ek.ua", "rozetka.com.ua", "comfy.ua", "foxtrot.com.ua", "allo.ua",
+    "telemart.ua", "brain.com.ua", "moyo.ua", "citrus.com.ua", "prom.ua",
+]
+
+
+def site_name(url: str | None) -> str | None:
+    if not url:
+        return None
+    host = urlparse(url).netloc.lower()
+    return host.removeprefix("www.") or None
+
+
 DESCRIPTION = (
     "Search the web for current or factual information: news, recent events, results, prices, "
     "schedules, or anything you are not sure about. Returns a short answer and a few snippets."
@@ -51,6 +68,10 @@ PARAMETERS = {
             "type": "string",
             "enum": ["general", "news"],
             "description": "Use news for recent events and headlines.",
+        },
+        "shopping": {
+            "type": "boolean",
+            "description": "True for where-to-buy, shop, availability or product price questions.",
         },
     },
     "required": ["query"],
@@ -73,35 +94,42 @@ class DailyLimit:
         return True
 
 
-def make_tool(api_key: str, daily_limit: int, depth: str = "basic") -> Tool:
+def make_tool(api_key: str, daily_limit: int, depth: str = "basic", country: str = "") -> Tool:
     limiter = DailyLimit(daily_limit)
-    recent: list[tuple[float, str, frozenset[str], asyncio.Task]] = []
+    recent: list[tuple[float, tuple[str, bool], frozenset[str], asyncio.Task]] = []
 
-    async def web_search(query: str, topic: str = "general") -> dict[str, Any]:
+    async def web_search(query: str, topic: str = "general", shopping: bool = False) -> dict[str, Any]:
         """Reuses a running or recent search for a near-identical query (the model sometimes asks twice)."""
+        topic = topic if topic in ("general", "news") else "general"
+        kind = (topic, bool(shopping))
         now = time.monotonic()
         recent[:] = [r for r in recent if now - r[0] < REUSE_SECONDS]
         words = query_words(query)
-        for _, old_topic, old_words, task in recent:
-            if old_topic == topic and similar(words, old_words):
+        for _, old_kind, old_words, task in recent:
+            if old_kind == kind and similar(words, old_words):
                 log.info("web_search %r: reusing a recent search", query)
                 return await asyncio.shield(task)
-        task = asyncio.ensure_future(search(query, topic))
-        recent.append((now, topic, words, task))
+        task = asyncio.ensure_future(search(query, topic, bool(shopping)))
+        recent.append((now, kind, words, task))
         return await asyncio.shield(task)
 
-    async def search(query: str, topic: str) -> dict[str, Any]:
+    async def search(query: str, topic: str, shopping: bool) -> dict[str, Any]:
         if not limiter.take():
             log.warning("web_search: daily limit of %d reached", daily_limit)
             return {"error": "Daily search limit reached. Tell the user you cannot search any more today."}
-        body = {
+        body: dict[str, Any] = {
             "query": query,
-            "topic": topic if topic in ("general", "news") else "general",
+            "topic": topic,
             "search_depth": depth,
             "max_results": 5,
-            "chunks_per_source": 1,
+            "chunks_per_source": CHUNKS_PER_RESULT,
             "include_answer": "basic",
         }
+        if country and topic == "general":
+            body["country"] = country
+        if shopping:
+            body["include_domains"] = SHOP_SITES
+            body["include_domains_mode"] = "prefer"
         started = time.monotonic()
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)) as http:
@@ -114,19 +142,22 @@ def make_tool(api_key: str, daily_limit: int, depth: str = "basic") -> Tool:
         except (aiohttp.ClientError, TimeoutError) as e:
             log.warning("web_search: %s", e)
             return {"error": "Search service did not respond."}
+        results = data.get("results", [])
         log.info(
-            "web_search %r (%s): %d results in %.1f s, %d searches today",
-            query, topic, len(data.get("results", [])), time.monotonic() - started, limiter.count,
+            "web_search %r (%s%s): %d results in %.1f s, %d searches today, sites: %s",
+            query, topic, ", shopping" if shopping else "", len(results), time.monotonic() - started,
+            limiter.count, ", ".join(filter(None, (site_name(r.get("url")) for r in results))),
         )
         return {
             "answer": data.get("answer"),
             "results": [
                 {
+                    "site": site_name(r.get("url")),
                     "title": r.get("title"),
                     "date": r.get("published_date"),
                     "snippet": (r.get("content") or "")[:MAX_SNIPPET_CHARS],
                 }
-                for r in data.get("results", [])
+                for r in results
             ],
         }
 
@@ -141,4 +172,5 @@ def from_env() -> Tool | None:
         key,
         daily_limit=int(os.environ.get("SEARCH_DAILY_LIMIT", "50")),
         depth=os.environ.get("TAVILY_SEARCH_DEPTH", "basic"),
+        country=os.environ.get("SEARCH_COUNTRY", "ukraine").strip(),
     )

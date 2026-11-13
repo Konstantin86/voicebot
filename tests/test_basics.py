@@ -278,3 +278,58 @@ def test_repeat_search_reuses_running_request():
     first, second, third = asyncio.run(main())
     assert calls == ["latest prices on gas in Ukraine", "power bank prices in Ukraine"]
     assert first == second and third["answer"] == "power bank prices in Ukraine"
+
+
+
+def test_shopping_search_request_and_site_names():
+    import asyncio
+
+    from voicebot.tools import web_search as ws
+
+    bodies = []
+
+    class FakeResponse:
+        status = 200
+
+        async def json(self):
+            return {"answer": "a", "results": [
+                {"url": "https://www.rozetka.com.ua/rtx-5070/", "title": "RTX 5070", "content": "32 499 грн"},
+                {"url": None, "title": "x", "content": "y"},
+            ]}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeSession:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, json, headers):
+            bodies.append(json)
+            return FakeResponse()
+
+    async def main():
+        original = ws.aiohttp.ClientSession
+        ws.aiohttp.ClientSession = FakeSession
+        try:
+            tool = ws.make_tool("k", daily_limit=10, country="ukraine")
+            shop = await tool.handler(query="rtx 5070 kharkiv", shopping=True)
+            news = await tool.handler(query="ukraine headlines", topic="news")
+        finally:
+            ws.aiohttp.ClientSession = original
+        return shop, news
+
+    shop, news = asyncio.run(main())
+    assert bodies[0]["country"] == "ukraine" and bodies[0]["include_domains_mode"] == "prefer"
+    assert "rozetka.com.ua" in bodies[0]["include_domains"]
+    assert "country" not in bodies[1] and "include_domains" not in bodies[1]
+    assert [r["site"] for r in shop["results"]] == ["rozetka.com.ua", None]
