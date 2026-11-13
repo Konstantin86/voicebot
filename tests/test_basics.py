@@ -111,11 +111,11 @@ def test_web_search_tool_registered_only_with_key(monkeypatch):
     from voicebot.tools import default_registry
 
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    assert default_registry().names() == ["end_session"]
+    assert default_registry().names() == ["end_session", "weather"]
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     reg = default_registry()
-    assert reg.names() == ["end_session", "web_search", "price_lookup"]
-    assert reg.specs()[1]["parameters"]["required"] == ["query"]
+    assert reg.names() == ["end_session", "weather", "web_search", "price_lookup"]
+    assert reg.specs()[2]["parameters"]["required"] == ["query"]
 
 
 
@@ -615,3 +615,54 @@ def test_goodbye_ends_session_without_follow_up():
     assert session.end_ready is True
     assert responses == []
     assert session.history == [("user", "Пока, спасибо"), ("assistant", "Пока!")]
+
+
+def test_weather_home_from_context(tmp_path):
+    from voicebot.tools.weather import home_from_context
+
+    ctx = tmp_path / "context.md"
+    ctx.write_text("# Household\n- Location: Kharkiv, Ukraine. Use metric units.\n", encoding="utf-8")
+    assert home_from_context(str(ctx)) == "Kharkiv"
+    assert home_from_context(str(tmp_path / "missing.md")) == ""
+
+
+def test_weather_summary():
+    from voicebot.tools.weather import summarize
+
+    data = {
+        "current": {"time": "2026-11-13T23:00", "temperature_2m": 2.9, "apparent_temperature": -1.4,
+                    "weather_code": 3, "wind_speed_10m": 4.1, "relative_humidity_2m": 80},
+        "hourly": {"time": [f"2026-11-14T{h:02d}:00" for h in range(6)],
+                   "temperature_2m": [2, 2, 1, 1, 0, 0], "precipitation_probability": [0, 0, 10, 20, 30, 40],
+                   "weather_code": [3, 3, 61, 61, 63, 63]},
+        "daily": {"time": ["2026-11-13"], "weather_code": [63], "temperature_2m_max": [8.8],
+                  "temperature_2m_min": [1.8], "precipitation_probability_max": [100],
+                  "precipitation_sum": [23.9], "wind_speed_10m_max": [6.0],
+                  "sunrise": ["2026-11-13T07:32"], "sunset": ["2026-11-13T16:43"]},
+    }
+    out = summarize("Lviv, Ukraine", data)
+    assert out["now"] == {"time": "23:00", "temp_c": 2.9, "feels_like_c": -1.4, "sky": "overcast",
+                          "wind_m_s": 4.1, "humidity_pct": 80}
+    assert [h["time"] for h in out["next_hours"]] == ["00:00", "03:00"]
+    assert out["days"][0]["sky"] == "rain" and out["days"][0]["sunset"] == "16:43"
+
+
+def test_goodbye_phrases_in_tool_description():
+    from voicebot.tools.memory_tools import end_session_tool
+
+    text = end_session_tool().description
+    for phrase in ("that's it", "that's all", "всё спасибо", "це все", "на сьогодні все"):
+        assert phrase in text
+
+
+def test_memory_files_are_private(tmp_path):
+    import os
+    import stat
+
+    from voicebot.memory import Memory
+
+    m = Memory(str(tmp_path / "mem"))
+    m.remember("Fact.")
+    m.save_session([("user", "hi")])
+    for name in ("facts.json", "history.jsonl"):
+        assert stat.S_IMODE(os.stat(tmp_path / "mem" / name).st_mode) == 0o640

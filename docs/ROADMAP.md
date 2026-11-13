@@ -11,7 +11,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 3. **Tools that answer real questions:**
    - ✅ Web search and news (Tavily `web_search` tool, 50/day limit, language hint from the transcript).
    - ✅ Product prices from Price Navigator (pn.com.ua): cheapest price, range, shops in Kharkiv.
-   - ⬜ Weather (Open-Meteo: free, no key).
+   - ✅ Weather (Open-Meteo: free, no key). Home city from the `Location:` line in context.md.
    - ⬜ Timers, alarms, reminders. Needs the bot to speak unprompted: play a sound, or open a short
      Azure session to say the reminder.
    - ⬜ Calendar (Outlook or Google): "What's on tomorrow?"
@@ -66,3 +66,4 @@ Memory + `end_session` (1, 2) → weather and timers (3) → wake word (5).
 - ✅ Web search (Tavily) with daily limit, searching sound and reply-language hint.
 - ✅ Price Navigator (pn.com.ua) prices, single-site search, cheapest offers.
 - ✅ Memory: remember/forget facts, recent conversations (12 h); end the call by saying goodbye.
+- ✅ Weather tool; strict shopping prices (only from cheapest_offers / price_lookup).

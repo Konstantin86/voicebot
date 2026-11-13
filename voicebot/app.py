@@ -14,6 +14,7 @@ from .memory import Memory
 from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
+from .tools.weather import home_from_context
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,9 @@ class App:
         self.audio = AudioIO(cfg.audio_device, cfg.mic_rate, cfg.speaker_rate)
         self.brain = create_brain(cfg)
         self.memory = Memory(cfg.memory_dir, cfg.memory_recent_hours, cfg.memory_recent_turns)
-        self.tools = default_registry(self.memory)
+        weather_home = cfg.weather_home or home_from_context(cfg.context_file)
+        log.info("weather home: %s", weather_home or "(not set)")
+        self.tools = default_registry(self.memory, weather_home)
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)

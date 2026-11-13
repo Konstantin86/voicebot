@@ -9,6 +9,7 @@ Azure Foundry Voice Live (`gpt-realtime-mini`) is the brain.
 - Say goodbye in any language ("bye", "пока", "бувай") and the bot hangs up after its reply.
 - "Remember that…" / "запам'ятай…" saves a fact; "forget…" deletes it. Recent conversations
   (last 12 h) are remembered across hang-ups. Stored in `/var/lib/voicebot/memory/`.
+- Weather for home (the `Location:` line in context.md) or any named city, via Open-Meteo.
 - Dot button, only while no call is active: single press = next voice (it says its name),
   double press = switch between gpt-realtime-mini (one low beep) and gpt-realtime (two high beeps).
 

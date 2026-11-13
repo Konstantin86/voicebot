@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 
 MAX_FACT_CHARS = 300
 MAX_TURN_CHARS = 400
+FILE_MODE = 0o640  # bot and its group only: conversations are private
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Memory:
         tmp = self.facts_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump([fact.__dict__ for fact in facts], f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, FILE_MODE)
         os.replace(tmp, self.facts_file)
 
     def remember(self, text: str) -> dict:
@@ -94,8 +96,10 @@ class Memory:
             "turns": [[role, text[:MAX_TURN_CHARS]] for role, text in turns if text.strip()],
         }
         try:
-            with open(self.history_file, "a", encoding="utf-8") as f:
+            fd = os.open(self.history_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, FILE_MODE)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            os.chmod(self.history_file, FILE_MODE)
         except OSError as e:
             log.warning("memory: cannot save history: %s", e)
 
@@ -128,6 +132,7 @@ class Memory:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(lines)
+            os.chmod(tmp, FILE_MODE)
             os.replace(tmp, self.history_file)
         except OSError as e:
             log.warning("memory: cannot trim history: %s", e)

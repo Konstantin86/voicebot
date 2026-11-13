@@ -38,13 +38,24 @@ def make_tools(memory: Memory) -> list[Tool]:
     ]
 
 
+GOODBYE_EXAMPLES = (
+    "English: bye, goodbye, see you, that's it, that's all, that's all for now, I'm done, "
+    "nothing else, no thanks that's all, thanks that's it, good night, stop, hang up. "
+    "Russian: пока, до свидания, всё, это всё, всё спасибо, больше ничего, хватит, отбой, "
+    "спокойной ночи, давай, до связи. "
+    "Ukrainian: бувай, па-па, до побачення, все, це все, все дякую, більше нічого, досить, "
+    "на сьогодні все, на добраніч, до зв'язку."
+)
+
+
 def end_session_tool() -> Tool:
     return Tool(
         name=END_SESSION,
         description=(
-            "End the conversation and hang up. Call it when the user says goodbye or clearly wants to stop "
-            "talking, in any language (e.g. 'bye', 'that's all', 'пока', 'всё, спасибо', 'бувай', "
-            "'на сьогодні все'). First say a very short goodbye in the user's language, then call this."
+            "End the conversation and hang up when the user says goodbye or signals they are done, "
+            "in any language. Examples of such phrases: " + GOODBYE_EXAMPLES + " "
+            "A plain 'thank you' in the middle of a conversation is not a goodbye. "
+            "Always say a very short goodbye in the user's language first, then call this."
         ),
         parameters={"type": "object", "properties": {}},
         handler=lambda: {"status": "ending"},

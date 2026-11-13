@@ -198,7 +198,19 @@ def make_tool(
             ],
         }
         if shopping:
+            words = key_words(query)
+            for r in results:
+                log.info(
+                    "  result %s | %s | match=%s | prices %s",
+                    site_name(r.get("url")), (r.get("title") or "")[:70], matches(r.get("title"), words),
+                    prices_uah((r.get("content") or "") + " " + (r.get("title") or "")) or "-",
+                )
             offers = cheapest_offers(query, results)
+            if not offers:
+                output["note"] = (
+                    "No result for this exact product had a readable price. Tell the user you could not "
+                    "find a reliable price for this exact model. Do not quote prices from the snippets."
+                )
             if offers:
                 output["cheapest_offers"] = offers
                 output["note"] = (
