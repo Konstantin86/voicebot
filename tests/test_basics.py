@@ -114,7 +114,7 @@ def test_web_search_tool_registered_only_with_key(monkeypatch):
     assert default_registry().names() == []
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     reg = default_registry()
-    assert reg.names() == ["web_search"]
+    assert reg.names() == ["web_search", "price_lookup"]
     assert reg.specs()[0]["parameters"]["required"] == ["query"]
 
 
@@ -333,3 +333,94 @@ def test_shopping_search_request_and_site_names():
     assert "rozetka.com.ua" in bodies[0]["include_domains"]
     assert "country" not in bodies[1] and "include_domains" not in bodies[1]
     assert [r["site"] for r in shop["results"]] == ["rozetka.com.ua", None]
+
+
+
+PN_PAGE = """<html><head><title>RTX 5070</title>
+<script type="application/ld+json">{"@context": "http://schema.org/", "@type": "Product",
+ "name": "Asus GeForce RTX 5070 Prime", "offers": {"@type": "AggregateOffer", "lowPrice": 32499,
+ "highPrice": 35499, "priceCurrency": "UAH", "offerCount": 18}}</script></head>
+<body><div>Продается в <b>18</b> магазинах (12 не из Харькова)</div></body></html>"""
+
+
+def test_parse_pn_product_page():
+    from voicebot.tools.price_lookup import parse_product_page
+
+    assert parse_product_page(PN_PAGE) == {
+        "name": "Asus GeForce RTX 5070 Prime", "price_from": 32499, "price_to": 35499,
+        "currency": "UAH", "shops": 18, "shops_in_kharkiv": 6,
+    }
+    assert parse_product_page("<html><title>Ошибка 404</title></html>") is None
+
+
+def test_pn_product_urls_are_clean_and_unique():
+    from voicebot.tools.price_lookup import product_page_urls
+
+    results = [
+        {"url": "https://pn.com.ua/md/123/?city=5"},
+        {"url": "https://www.pn.com.ua/md/123/"},
+        {"url": "https://pn.com.ua/ct/1047/"},
+        {"url": "https://pn.com.ua/md/456/"},
+    ]
+    assert product_page_urls(results) == ["https://pn.com.ua/md/123/", "https://pn.com.ua/md/456/"]
+
+
+def test_price_lookup_end_to_end_sorted_cheapest_first():
+    import asyncio
+
+    from voicebot.tools import price_lookup as pl
+    from voicebot.tools.web_search import DailyLimit
+
+    cheap = PN_PAGE.replace("32499", "29999").replace("RTX 5070 Prime", "RTX 5070 Dual")
+    pages = {"https://pn.com.ua/md/1/": PN_PAGE, "https://pn.com.ua/md/2/": cheap}
+    requests = []
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, data):
+            self.data = data
+
+        async def json(self):
+            return self.data
+
+        async def text(self):
+            return self.data
+
+        def raise_for_status(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeSession:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, json, headers):
+            requests.append(json)
+            return FakeResponse({"results": [{"url": u} for u in pages]})
+
+        def get(self, url, headers):
+            return FakeResponse(pages[url])
+
+    async def main():
+        original = pl.aiohttp.ClientSession
+        pl.aiohttp.ClientSession = FakeSession
+        try:
+            return await pl.make_tool("k", DailyLimit(5)).handler(product="RTX 5070")
+        finally:
+            pl.aiohttp.ClientSession = original
+
+    out = asyncio.run(main())
+    assert requests[0]["include_domains"] == ["pn.com.ua"] and requests[0]["include_domains_mode"] == "restrict"
+    assert [p["price_from"] for p in out["products"]] == [29999, 32499]

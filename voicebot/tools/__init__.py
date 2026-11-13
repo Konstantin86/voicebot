@@ -57,9 +57,9 @@ def default_registry() -> ToolRegistry:
     from . import web_search
 
     registry = ToolRegistry()
-    search = web_search.from_env()
-    if search:
-        registry.register(search)
-    else:
-        log.info("web_search disabled (no TAVILY_API_KEY)")
+    tools = web_search.from_env()
+    for tool in tools:
+        registry.register(tool)
+    if not tools:
+        log.info("web_search and price_lookup disabled (no TAVILY_API_KEY)")
     return registry

@@ -10,6 +10,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 2. ⬜ **End the call by voice.** "Bye" / "that's all" → the bot hangs up (`end_session` tool).
 3. **Tools that answer real questions:**
    - ✅ Web search and news (Tavily `web_search` tool, 50/day limit, language hint from the transcript).
+   - ✅ Product prices from Price Navigator (pn.com.ua): cheapest price, range, shops in Kharkiv.
    - ⬜ Weather (Open-Meteo: free, no key).
    - ⬜ Timers, alarms, reminders. Needs the bot to speak unprompted: play a sound, or open a short
      Azure session to say the reminder.

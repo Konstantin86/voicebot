@@ -94,8 +94,10 @@ class DailyLimit:
         return True
 
 
-def make_tool(api_key: str, daily_limit: int, depth: str = "basic", country: str = "") -> Tool:
-    limiter = DailyLimit(daily_limit)
+def make_tool(
+    api_key: str, daily_limit: int, depth: str = "basic", country: str = "", limiter: DailyLimit | None = None
+) -> Tool:
+    limiter = limiter or DailyLimit(daily_limit)
     recent: list[tuple[float, tuple[str, bool], frozenset[str], asyncio.Task]] = []
 
     async def web_search(query: str, topic: str = "general", shopping: bool = False) -> dict[str, Any]:
@@ -164,13 +166,20 @@ def make_tool(api_key: str, daily_limit: int, depth: str = "basic", country: str
     return Tool(name="web_search", description=DESCRIPTION, parameters=PARAMETERS, handler=web_search)
 
 
-def from_env() -> Tool | None:
+def from_env() -> list[Tool]:
+    """web_search and price_lookup, sharing one daily search limit. Empty without TAVILY_API_KEY."""
+    from . import price_lookup
+
     key = os.environ.get("TAVILY_API_KEY", "").strip()
     if not key:
-        return None
-    return make_tool(
+        return []
+    daily_limit = int(os.environ.get("SEARCH_DAILY_LIMIT", "50"))
+    limiter = DailyLimit(daily_limit)
+    search = make_tool(
         key,
-        daily_limit=int(os.environ.get("SEARCH_DAILY_LIMIT", "50")),
+        daily_limit=daily_limit,
         depth=os.environ.get("TAVILY_SEARCH_DEPTH", "basic"),
         country=os.environ.get("SEARCH_COUNTRY", "ukraine").strip(),
+        limiter=limiter,
     )
+    return [search, price_lookup.make_tool(key, limiter)]
