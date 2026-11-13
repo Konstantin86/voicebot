@@ -1,0 +1,27 @@
+[Unit]
+Description=Home voice assistant (Jabra + Azure Voice Live)
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=voicebot
+Group=voicebot
+SupplementaryGroups=audio
+WorkingDirectory=/opt/voicebot
+StateDirectory=voicebot
+EnvironmentFile=/etc/voicebot/voicebot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/voicebot/venv/bin/python -m voicebot
+Restart=always
+RestartSec=3
+RestartPreventExitStatus=78
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

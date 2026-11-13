@@ -1,0 +1,3 @@
+# Jabra Speak2 40 UC: let the voicebot group read button events without sudo.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b0e", ATTRS{idProduct}=="ae6d", GROUP="voicebot", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="0b0e", ATTRS{idProduct}=="ae6d", GROUP="voicebot", MODE="0660"
