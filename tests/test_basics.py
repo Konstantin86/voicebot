@@ -645,6 +645,14 @@ def test_weather_summary():
                           "wind_m_s": 4.1, "humidity_pct": 80}
     assert [h["time"] for h in out["next_hours"]] == ["00:00", "03:00"]
     assert out["days"][0]["sky"] == "rain" and out["days"][0]["sunset"] == "16:43"
+    assert out["days"][0]["day"] == "today"
+
+
+def test_weather_day_labels():
+    from voicebot.tools.weather import day_label
+
+    assert day_label("2026-11-14", "2026-11-13") == "tomorrow"
+    assert day_label("2026-11-16", "2026-11-13") == "Monday"
 
 
 def test_goodbye_phrases_in_tool_description():
@@ -666,3 +674,47 @@ def test_memory_files_are_private(tmp_path):
     m.save_session([("user", "hi")])
     for name in ("facts.json", "history.jsonl"):
         assert stat.S_IMODE(os.stat(tmp_path / "mem" / name).st_mode) == 0o640
+
+
+
+def test_is_goodbye():
+    from voicebot.goodbye import is_goodbye
+
+    for text in ["Bye.", "Thank you, that's it.", "Thanks, that's all for now", "OK, I'm done",
+                 "Всё, спасибо, пока!", "Ну ладно, до свидания", "Спасибо, больше ничего",
+                 "Дякую, це все", "На сьогодні все", "Бувай!", "Добре, на добраніч"]:
+        assert is_goodbye(text), text
+    for text in ["Thank you", "That's it, what about the weather?", "Это всё хорошо, расскажи ещё",
+                 "Всё понятно", "Stop talking about prices and tell me the weather",
+                 "Пока не знаю, что спросить", "Bye the way, how much is it"]:
+        assert not is_goodbye(text), text
+
+
+def test_goodbye_in_transcript_ends_after_reply():
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.voicelive import VoiceLiveBrain
+    from voicebot.tools import ToolRegistry
+    from voicebot.usage import TokenTotals
+
+    class FakeConn:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield NS(type="response.created")
+            yield NS(type="conversation.item.input_audio_transcription.completed", transcript="Thank you, that's it.")
+            await asyncio.sleep(0.05)
+            assert session.end_ready is False
+            yield NS(type="response.audio_transcript.done", transcript="You're welcome! Goodbye!")
+            yield NS(type="response.done", response=None)
+            await asyncio.sleep(0.05)
+
+    speaker = NS(play=lambda b: None, clear=lambda: None, is_playing=lambda: False)
+    session = SessionIO(mic=None, speaker=speaker, instructions="", tools=ToolRegistry(), stop=asyncio.Event(),
+                        model="m", voice="v")
+    brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
+    assert session.end_ready is True

@@ -31,8 +31,11 @@ class Memory:
         self.history_file = os.path.join(directory, "history.jsonl")
         try:
             os.makedirs(directory, mode=0o750, exist_ok=True)
+            for path in (self.facts_file, self.history_file):
+                if os.path.exists(path):
+                    os.chmod(path, FILE_MODE)
         except OSError as e:
-            log.warning("memory: cannot create %s: %s", directory, e)
+            log.warning("memory: cannot prepare %s: %s", directory, e)
 
     # Long-term facts
 

@@ -1,5 +1,6 @@
 """weather tool using Open-Meteo (free, no API key)."""
 
+import datetime
 import logging
 import re
 import time
@@ -35,7 +36,7 @@ PARAMETERS = {
     "type": "object",
     "properties": {
         "location": {"type": "string", "description": "City name in English, e.g. 'Lviv'. Empty = home."},
-        "days": {"type": "integer", "description": "Forecast days, 1 to 7. Default 2 (today and tomorrow)."},
+        "days": {"type": "integer", "description": "Forecast days, 2 to 7 (today, tomorrow, ...). Default 2."},
     },
 }
 
@@ -54,6 +55,15 @@ def describe(code: Any) -> str:
     return WEATHER_CODES.get(code, f"weather code {code}")
 
 
+def day_label(date: str, today: str) -> str:
+    try:
+        offset = (datetime.date.fromisoformat(date) - datetime.date.fromisoformat(today)).days
+        weekday = datetime.date.fromisoformat(date).strftime("%A")
+    except ValueError:
+        return date
+    return {0: "today", 1: "tomorrow"}.get(offset, weekday)
+
+
 def summarize(place: str, data: dict) -> dict[str, Any]:
     current = data.get("current", {})
     hourly = data.get("hourly", {})
@@ -68,8 +78,10 @@ def summarize(place: str, data: dict) -> dict[str, Any]:
         for i, t in enumerate(hourly.get("time", []))
         if i % HOURLY_STEP == 0
     ]
+    today = (current.get("time") or "")[:10]
     days = [
         {
+            "day": day_label(d, today),
             "date": d,
             "sky": describe(daily["weather_code"][i]),
             "min_c": daily["temperature_2m_min"][i],
@@ -118,7 +130,7 @@ def make_tool(home: str) -> Tool:
         name = (location or "").strip() or home
         if not name:
             return {"error": "No location given and no home location set. Ask the user which city."}
-        days = max(1, min(7, int(days or 2)))
+        days = max(2, min(7, int(days or 2)))
         started = time.monotonic()
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)) as http:

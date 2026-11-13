@@ -10,6 +10,7 @@ from azure.core.credentials import AzureKeyCredential
 
 from ..config import Config
 from .base import SessionIO
+from ..goodbye import is_goodbye
 from ..language import add_language_hint, detect_language
 from ..tools.memory_tools import END_SESSION
 from ..usage import DailyUsage, TokenTotals, prices_for
@@ -18,6 +19,8 @@ log = logging.getLogger(__name__)
 
 MIC_FRAMES_PER_MESSAGE = 2
 TRANSCRIPT_WAIT_SECONDS = 2
+GOODBYE_REPLY_START_SECONDS = 2
+GOODBYE_REPLY_MAX_SECONDS = 15
 
 
 def tool_output_item(call_id: str, output: str) -> FunctionCallOutputItem:
@@ -141,6 +144,9 @@ class VoiceLiveBrain:
                     turn.transcript_ready.set()
                     s.history.append(("user", turn.user_text))
                     log.info("user: %s", turn.user_text)
+                    if is_goodbye(turn.user_text):
+                        log.info("goodbye heard; hanging up after the reply")
+                        spawn(self._end_after_reply(s, turn))
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_FAILED:
                     turn.transcript_ready.set()
                 elif kind == E.RESPONSE_AUDIO_TRANSCRIPT_DONE:
@@ -155,7 +161,12 @@ class VoiceLiveBrain:
                     if s.thinking_sound:
                         s.speaker.play(s.thinking_sound)
                     tool_tasks.append(spawn(self._run_tool(conn, s, event, turn)))
+                elif kind == E.RESPONSE_CREATED:
+                    turn.responding.set()
+                    turn.response_finished.clear()
                 elif kind == E.RESPONSE_DONE:
+                    turn.responding.clear()
+                    turn.response_finished.set()
                     s.touch()
                     if event.response and event.response.usage:
                         usage.add_usage(event.response.usage)
@@ -187,6 +198,21 @@ class VoiceLiveBrain:
         await conn.conversation.item.create(item=tool_output_item(event.call_id, add_language_hint(output, language)))
         s.touch()
 
+    async def _end_after_reply(self, s: SessionIO, turn: "_Turn") -> None:
+        """Let the model's reply (usually a goodbye) start and finish, then mark the session to end.
+        The reply may already be done when the transcript arrives."""
+        if not turn.responding.is_set():
+            try:
+                await asyncio.wait_for(turn.responding.wait(), GOODBYE_REPLY_START_SECONDS)
+            except asyncio.TimeoutError:
+                s.end_ready = True
+                return
+        try:
+            await asyncio.wait_for(turn.response_finished.wait(), GOODBYE_REPLY_MAX_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        s.end_ready = True
+
     async def _respond_after(self, conn, tool_tasks: list[asyncio.Task]) -> None:
         results = await asyncio.gather(*tool_tasks, return_exceptions=True)
         for result in results:
@@ -200,3 +226,5 @@ class _Turn:
         self.user_text = ""
         self.transcript_ready = asyncio.Event()
         self.transcript_ready.set()
+        self.responding = asyncio.Event()
+        self.response_finished = asyncio.Event()
