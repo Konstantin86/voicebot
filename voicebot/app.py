@@ -30,9 +30,15 @@ class App:
         self.audio = AudioIO(cfg.audio_device, cfg.mic_rate, cfg.speaker_rate)
         self.brain = create_brain(cfg)
         self.memory = Memory(cfg.memory_dir, cfg.memory_recent_hours, cfg.memory_recent_turns)
-        weather_home = cfg.weather_home or home_from_context(cfg.context_file)
-        log.info("weather home: %s", weather_home or "(not set)")
-        self.tools = default_registry(self.memory, weather_home)
+        if cfg.weather_home:
+            weather_home, source = cfg.weather_home, "WEATHER_HOME"
+        else:
+            weather_home, source = home_from_context(cfg.context_file), "context.md"
+        if weather_home:
+            log.info("weather home: %s (from %s)", weather_home, source)
+        else:
+            log.info("weather home: not set; %s", "will detect from IP" if cfg.weather_detect_home else "ask the user")
+        self.tools = default_registry(self.memory, weather_home, cfg.weather_detect_home)
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)

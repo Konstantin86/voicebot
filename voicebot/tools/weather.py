@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+IP_LOCATION_URL = "https://ipinfo.io/json"
 TIMEOUT_SECONDS = 8
 HOURLY_STEP = 3
 
@@ -110,8 +111,21 @@ def summarize(place: str, data: dict) -> dict[str, Any]:
     }
 
 
-def make_tool(home: str) -> Tool:
+async def detect_city(http: aiohttp.ClientSession) -> str:
+    """City of this internet connection (ipinfo.io), or ''. Used only when no home is configured."""
+    try:
+        async with http.get(IP_LOCATION_URL) as resp:
+            resp.raise_for_status()
+            return ((await resp.json()).get("city") or "").strip()
+    except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+        log.warning("weather: could not detect location from IP: %s", e)
+        return ""
+
+
+def make_tool(home: str, detect_home: bool = True) -> Tool:
+    """home: configured city, or '' to detect it from the IP address on first use (if detect_home)."""
     places: dict[str, tuple[float, float, str]] = {}
+    detected: list[str] = []  # city found by the IP lookup, cached once found
 
     async def geocode(http: aiohttp.ClientSession, name: str) -> tuple[float, float, str] | None:
         key = name.lower()
@@ -127,13 +141,20 @@ def make_tool(home: str) -> Tool:
         return places[key]
 
     async def weather(location: str = "", days: int = 2) -> dict[str, Any]:
-        name = (location or "").strip() or home
-        if not name:
-            return {"error": "No location given and no home location set. Ask the user which city."}
         days = max(2, min(7, int(days or 2)))
         started = time.monotonic()
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)) as http:
+                name = (location or "").strip() or home
+                if not name and detect_home:
+                    if not detected:
+                        city = await detect_city(http)
+                        if city:
+                            detected.append(city)  # only successes are cached; failures retry next time
+                            log.info("weather home: %s (detected from IP)", city)
+                    name = detected[0] if detected else ""
+                if not name:
+                    return {"error": "No location given and no home location known. Ask the user which city."}
                 place = await geocode(http, name)
                 if place is None:
                     return {"error": f"Unknown place {name!r}. Ask the user to say the city name again."}

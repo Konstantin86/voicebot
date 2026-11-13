@@ -718,3 +718,65 @@ def test_goodbye_in_transcript_ends_after_reply():
     brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
     asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
     assert session.end_ready is True
+
+
+
+def test_weather_detects_home_from_ip_once():
+    import asyncio
+
+    from voicebot.tools import weather as w
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def raise_for_status(self):
+            pass
+
+        async def json(self):
+            return self.data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeSession:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, url, params=None):
+            calls.append(url)
+            if url == w.IP_LOCATION_URL:
+                return FakeResponse({"city": "Kharkiv"})
+            if url == w.GEOCODE_URL:
+                assert params["name"] == "Kharkiv"
+                return FakeResponse({"results": [{"latitude": 50.0, "longitude": 36.2, "name": "Kharkiv",
+                                                  "country": "Ukraine"}]})
+            return FakeResponse({"current": {"time": "2026-11-13T23:00"}, "hourly": {}, "daily": {}})
+
+    async def main():
+        original = w.aiohttp.ClientSession
+        w.aiohttp.ClientSession = FakeSession
+        try:
+            tool = w.make_tool("", detect_home=True)
+            first = await tool.handler()
+            second = await tool.handler()
+            off = await w.make_tool("", detect_home=False).handler()
+        finally:
+            w.aiohttp.ClientSession = original
+        return first, second, off
+
+    first, second, off = asyncio.run(main())
+    assert first["place"] == "Kharkiv, Ukraine" and second["place"] == "Kharkiv, Ukraine"
+    assert calls.count(w.IP_LOCATION_URL) == 1
+    assert "error" in off

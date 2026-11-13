@@ -56,6 +56,7 @@ class Config:
     state_file: str
     memory_dir: str
     weather_home: str
+    weather_detect_home: bool
     memory_recent_hours: float
     memory_recent_turns: int
 
@@ -87,6 +88,7 @@ class Config:
             state_file=_env("STATE_FILE", "/var/lib/voicebot/state.json"),
             memory_dir=_env("MEMORY_DIR", "/var/lib/voicebot/memory"),
             weather_home=_env("WEATHER_HOME"),
+            weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
             memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
             memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "20")),
         )

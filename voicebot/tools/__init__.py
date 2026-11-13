@@ -53,12 +53,12 @@ class ToolRegistry:
         return list(self._tools)
 
 
-def default_registry(memory=None, weather_home: str = "") -> ToolRegistry:
+def default_registry(memory=None, weather_home: str = "", weather_detect_home: bool = False) -> ToolRegistry:
     from . import memory_tools, weather, web_search
 
     registry = ToolRegistry()
     registry.register(memory_tools.end_session_tool())
-    registry.register(weather.make_tool(weather_home))
+    registry.register(weather.make_tool(weather_home, weather_detect_home))
     if memory is not None:
         for tool in memory_tools.make_tools(memory):
             registry.register(tool)
