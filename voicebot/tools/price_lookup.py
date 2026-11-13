@@ -15,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from . import Tool
+from .matching import key_words, matches
 from .web_search import URL as TAVILY_URL, DailyLimit
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,13 @@ DESCRIPTION = (
 PARAMETERS = {
     "type": "object",
     "properties": {
-        "product": {"type": "string", "description": "Product name or model, e.g. 'RTX 5070' or 'iPhone 16 128GB'."},
+        "product": {
+            "type": "string",
+            "description": (
+                "Brand and model as shops list it, in Latin letters, e.g. 'Apple MacBook Pro 14 M5 Pro', "
+                "'RTX 5070', 'iPhone 16 128GB'. No descriptive words."
+            ),
+        },
     },
     "required": ["product"],
 }
@@ -106,20 +113,28 @@ def make_tool(api_key: str, limiter: DailyLimit) -> Tool:
         except (aiohttp.ClientError, TimeoutError) as e:
             log.warning("price_lookup: %s", e)
             return {"error": "Price Navigator did not respond."}
+        words = key_words(product)
         products = []
         for url, page in zip(urls, pages):
             info = parse_product_page(page) if isinstance(page, str) else None
-            if info:
-                products.append(info)
-            else:
+            if not info:
                 log.info("price_lookup: could not read %s (%r)", url, page if not isinstance(page, str) else "no data")
+            elif info["price_from"] is None:
+                log.info("price_lookup: %s has no offers", info["name"])
+            elif not matches(info["name"], words):
+                log.info("price_lookup: %s does not match %s", info["name"], words)
+            else:
+                products.append(info)
         log.info(
             "price_lookup %r: %d of %d pages read in %.1f s: %s",
             product, len(products), len(urls), time.monotonic() - started,
             "; ".join(f"{p['name']} {p['price_from']}-{p['price_to']}" for p in products),
         )
         if not products:
-            return {"error": "Could not read prices from Price Navigator."}
+            return {
+                "error": f"No matching product with prices found on Price Navigator for {product!r}.",
+                "next_step": "Call web_search with shopping=true for the same product now.",
+            }
         products.sort(key=lambda p: p["price_from"] if isinstance(p["price_from"], (int, float)) else float("inf"))
         return {
             "source": "Price Navigator (pn.com.ua), Kharkiv region",

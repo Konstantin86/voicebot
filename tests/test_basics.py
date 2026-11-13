@@ -372,7 +372,12 @@ def test_price_lookup_end_to_end_sorted_cheapest_first():
     from voicebot.tools.web_search import DailyLimit
 
     cheap = PN_PAGE.replace("32499", "29999").replace("RTX 5070 Prime", "RTX 5070 Dual")
-    pages = {"https://pn.com.ua/md/1/": PN_PAGE, "https://pn.com.ua/md/2/": cheap}
+    unrelated = PN_PAGE.replace("Asus GeForce RTX 5070 Prime", "Deuter AC Lite 14 SL moss/apple").replace("32499", "2622")
+    pages = {
+        "https://pn.com.ua/md/1/": PN_PAGE,
+        "https://pn.com.ua/md/2/": cheap,
+        "https://pn.com.ua/md/3/": unrelated,
+    }
     requests = []
 
     class FakeResponse:
@@ -424,6 +429,13 @@ def test_price_lookup_end_to_end_sorted_cheapest_first():
     out = asyncio.run(main())
     assert requests[0]["include_domains"] == ["pn.com.ua"] and requests[0]["include_domains_mode"] == "restrict"
     assert [p["price_from"] for p in out["products"]] == [29999, 32499]
+
+
+def test_price_lookup_skips_pages_without_offers():
+    from voicebot.tools.price_lookup import parse_product_page
+
+    page = PN_PAGE.replace('"lowPrice": 32499,', "")
+    assert parse_product_page(page)["price_from"] is None
 
 
 
@@ -483,3 +495,35 @@ def test_site_search_restricts_and_is_not_reused():
     asyncio.run(main())
     assert len(bodies) == 2
     assert bodies[1]["include_domains"] == ["elmir.ua"] and bodies[1]["include_domains_mode"] == "restrict"
+
+
+
+def test_key_words_and_matching():
+    from voicebot.tools.matching import key_words, matches
+
+    words = key_words("MacBook 14-inch with M5 Pro")
+    assert words == ["macbook", "14", "m5"]
+    assert not matches("Apple iPad 10.9 Wi-Fi 64Gb Silver (MCM74NF/A)", words)
+    assert not matches("Deuter AC Lite 14 SL moss/apple", words)
+    assert matches('Apple MacBook Pro 14" M5 Pro 24/1TB Space Black', words)
+    assert key_words("видеокарта RTX 5070") == ["5070"]
+    assert matches("anything", [])
+
+
+def test_prices_uah():
+    from voicebot.tools.matching import prices_uah
+
+    assert prices_uah("Ціна 114 999 грн, було 120 000 ₴; 92999 UAH; доставка 50 грн") == [114999, 120000, 92999]
+
+
+def test_cheapest_offers():
+    from voicebot.tools.web_search import cheapest_offers
+
+    results = [
+        {"url": "https://istore.ua/a", "title": "Apple MacBook Pro 14 M5 Pro", "content": "Ціна 114 999 грн"},
+        {"url": "https://appleroom.ua/b", "title": "MacBook Pro 14 M5 Pro 24GB", "content": "від 92 999 грн"},
+        {"url": "https://case.ua/c", "title": "Чохол для MacBook 14", "content": "499 грн"},
+        {"url": "https://x.ua/d", "title": "MacBook Pro 14 M5 Pro review", "content": "no price"},
+    ]
+    offers = cheapest_offers("MacBook 14 M5 Pro", results)
+    assert [(o["site"], o["price_uah"]) for o in offers] == [("appleroom.ua", 92999), ("istore.ua", 114999)]

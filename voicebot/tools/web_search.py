@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from . import Tool
+from .matching import key_words, matches, prices_uah
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,20 @@ class DailyLimit:
         return True
 
 
+def cheapest_offers(query: str, results: list[dict], limit: int = 5) -> list[dict[str, Any]]:
+    """Lowest UAH price per result whose title matches the query's key words, cheapest first."""
+    words = key_words(query)
+    offers = []
+    for r in results:
+        if not matches(r.get("title"), words):
+            continue
+        prices = prices_uah(r.get("content") or "") + prices_uah(r.get("title") or "")
+        if prices:
+            offers.append({"site": site_name(r.get("url")), "title": r.get("title"), "price_uah": min(prices)})
+    offers.sort(key=lambda o: o["price_uah"])
+    return offers[:limit]
+
+
 def make_tool(
     api_key: str, daily_limit: int, depth: str = "basic", country: str = "", limiter: DailyLimit | None = None
 ) -> Tool:
@@ -170,7 +185,7 @@ def make_tool(
             query, topic, ", shopping" if shopping else "", f", site {site}" if site else "", len(results), time.monotonic() - started,
             limiter.count, ", ".join(filter(None, (site_name(r.get("url")) for r in results))),
         )
-        return {
+        output: dict[str, Any] = {
             "answer": data.get("answer"),
             "results": [
                 {
@@ -182,6 +197,16 @@ def make_tool(
                 for r in results
             ],
         }
+        if shopping:
+            offers = cheapest_offers(query, results)
+            if offers:
+                output["cheapest_offers"] = offers
+                output["note"] = (
+                    "cheapest_offers lists the lowest UAH price mentioned in each matching result, "
+                    "cheapest first. Use it for the cheapest option."
+                )
+                log.info("web_search cheapest: %s", ", ".join(f"{o['site']} {o['price_uah']}" for o in offers))
+        return output
 
     return Tool(name="web_search", description=DESCRIPTION, parameters=PARAMETERS, handler=web_search)
 
