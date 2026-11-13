@@ -6,6 +6,9 @@ Azure Foundry Voice Live (`gpt-realtime-mini`) is the brain.
 - Call button → session starts (rising beep). Speak in English, Ukrainian or Russian.
 - Hang-up button, or 30 s of silence → session ends (falling beep). Low double beep = error, see logs.
 - Volume buttons change the Jabra volume.
+- Say goodbye in any language ("bye", "пока", "бувай") and the bot hangs up after its reply.
+- "Remember that…" / "запам'ятай…" saves a fact; "forget…" deletes it. Recent conversations
+  (last 12 h) are remembered across hang-ups. Stored in `/var/lib/voicebot/memory/`.
 - Dot button, only while no call is active: single press = next voice (it says its name),
   double press = switch between gpt-realtime-mini (one low beep) and gpt-realtime (two high beeps).
 

@@ -11,6 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 from ..config import Config
 from .base import SessionIO
 from ..language import add_language_hint, detect_language
+from ..tools.memory_tools import END_SESSION
 from ..usage import DailyUsage, TokenTotals, prices_for
 
 log = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ class VoiceLiveBrain:
         turn = _Turn()
         background: set[asyncio.Task] = set()
         tool_tasks: list[asyncio.Task] = []
+        end_requested = False
 
         def spawn(coro) -> asyncio.Task:
             task = asyncio.create_task(coro)
@@ -137,13 +139,19 @@ class VoiceLiveBrain:
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED:
                     turn.user_text = event.transcript.strip()
                     turn.transcript_ready.set()
+                    s.history.append(("user", turn.user_text))
                     log.info("user: %s", turn.user_text)
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_FAILED:
                     turn.transcript_ready.set()
                 elif kind == E.RESPONSE_AUDIO_TRANSCRIPT_DONE:
+                    s.history.append(("assistant", event.transcript.strip()))
                     log.info("assistant: %s", event.transcript.strip())
                 elif kind == E.RESPONSE_FUNCTION_CALL_ARGUMENTS_DONE:
                     log.info("tool call %s(%s)", event.name, event.arguments)
+                    if event.name == END_SESSION:
+                        # The goodbye was spoken in this same response; hang up once it has played.
+                        end_requested = True
+                        continue
                     if s.thinking_sound:
                         s.speaker.play(s.thinking_sound)
                     tool_tasks.append(spawn(self._run_tool(conn, s, event, turn)))
@@ -151,7 +159,9 @@ class VoiceLiveBrain:
                     s.touch()
                     if event.response and event.response.usage:
                         usage.add_usage(event.response.usage)
-                    if tool_tasks:
+                    if end_requested:
+                        s.end_ready = True
+                    elif tool_tasks:
                         spawn(self._respond_after(conn, tool_tasks))
                         tool_tasks = []
                 elif kind == E.SESSION_UPDATED:

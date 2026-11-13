@@ -4,10 +4,10 @@ Ordered by value. Each phase builds on the previous one.
 Status: ✅ done · 🟡 in progress · ⬜ not started.
 
 ## Phase 1: Make it useful every day
-1. ⬜ **Memory across sessions.** Today every hang-up or voice change starts from zero.
+1. ✅ **Memory across sessions.** Today every hang-up or voice change starts from zero.
    - Short-term: after each session, save a short summary; load the last few into the next session.
    - Long-term: "remember that…" / "forget…" as tools; facts stored in a file next to `context.md`.
-2. ⬜ **End the call by voice.** "Bye" / "that's all" → the bot hangs up (`end_session` tool).
+2. ✅ **End the call by voice.** "Bye" / "that's all" → the bot hangs up (`end_session` tool).
 3. **Tools that answer real questions:**
    - ✅ Web search and news (Tavily `web_search` tool, 50/day limit, language hint from the transcript).
    - ✅ Product prices from Price Navigator (pn.com.ua): cheapest price, range, shops in Kharkiv.
@@ -64,3 +64,5 @@ Memory + `end_session` (1, 2) → weather and timers (3) → wake word (5).
 - ✅ Dot button: single press = next voice, double press = switch model (spoken confirmation).
 - ✅ Token totals and cost estimate per session and per day in the log.
 - ✅ Web search (Tavily) with daily limit, searching sound and reply-language hint.
+- ✅ Price Navigator (pn.com.ua) prices, single-site search, cheapest offers.
+- ✅ Memory: remember/forget facts, recent conversations (12 h); end the call by saying goodbye.

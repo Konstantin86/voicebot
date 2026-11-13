@@ -10,6 +10,7 @@ from .audio import AudioIO
 from .brains import SessionIO, create_brain
 from .config import Config
 from .jabra import HookButtons, MediaKeys
+from .memory import Memory
 from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
@@ -27,7 +28,8 @@ class App:
         self.cfg = cfg
         self.audio = AudioIO(cfg.audio_device, cfg.mic_rate, cfg.speaker_rate)
         self.brain = create_brain(cfg)
-        self.tools = default_registry()
+        self.memory = Memory(cfg.memory_dir, cfg.memory_recent_hours, cfg.memory_recent_turns)
+        self.tools = default_registry(self.memory)
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)
@@ -152,7 +154,11 @@ class App:
         session = SessionIO(
             mic=mic,
             speaker=self.audio,
-            instructions=build_instructions(self.cfg.context_file, web_search="web_search" in self.tools.names()),
+            instructions=build_instructions(
+                self.cfg.context_file,
+                web_search="web_search" in self.tools.names(),
+                memory=self.memory.prompt_text(),
+            ),
             tools=self.tools,
             stop=stop,
             model=self.settings.model,
@@ -174,6 +180,10 @@ class App:
                 await asyncio.wait({brain_task, stop_wait}, timeout=1, return_when=asyncio.FIRST_COMPLETED)
                 if stop.is_set():
                     reason = "hang-up or stop"
+                    break
+                if session.end_ready and not self.audio.is_playing():
+                    await asyncio.sleep(PLAYBACK_TAIL)
+                    reason = "goodbye"
                     break
                 if brain_task.done():
                     reason = "connection closed"
@@ -204,4 +214,5 @@ class App:
                 # that would end the new session.
                 self.hook.set_off_hook_light(False)
             await self._play_cue("ERROR" if failed else "END")
+            self.memory.save_session(session.history)
             log.info("session ended (%s) after %.0f s", reason, time.monotonic() - started)

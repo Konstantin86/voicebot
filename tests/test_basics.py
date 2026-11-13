@@ -111,11 +111,11 @@ def test_web_search_tool_registered_only_with_key(monkeypatch):
     from voicebot.tools import default_registry
 
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    assert default_registry().names() == []
+    assert default_registry().names() == ["end_session"]
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     reg = default_registry()
-    assert reg.names() == ["web_search", "price_lookup"]
-    assert reg.specs()[0]["parameters"]["required"] == ["query"]
+    assert reg.names() == ["end_session", "web_search", "price_lookup"]
+    assert reg.specs()[1]["parameters"]["required"] == ["query"]
 
 
 
@@ -527,3 +527,91 @@ def test_cheapest_offers():
     ]
     offers = cheapest_offers("MacBook 14 M5 Pro", results)
     assert [(o["site"], o["price_uah"]) for o in offers] == [("appleroom.ua", 92999), ("istore.ua", 114999)]
+
+
+
+def test_memory_facts_remember_forget(tmp_path):
+    from voicebot.memory import Memory
+
+    m = Memory(str(tmp_path / "mem"))
+    assert m.remember("The cat is called Murka.") == {"status": "remembered", "id": 1}
+    assert m.remember("the cat is called murka.")["status"] == "already remembered"
+    assert m.remember("Kostya likes jazz.")["id"] == 2
+    assert m.forget(1)["status"] == "forgotten"
+    assert "error" in m.forget(1)
+    assert [f.text for f in Memory(str(tmp_path / "mem")).facts()] == ["Kostya likes jazz."]
+    assert "[2] Kostya likes jazz." in m.prompt_text()
+
+
+def test_memory_recent_history(tmp_path):
+    import time
+
+    from voicebot.memory import Memory
+
+    m = Memory(str(tmp_path / "mem"), recent_hours=1, recent_turns=3)
+    m.save_session([("assistant", "Hi, I'm Cedar.")])  # no user speech: not saved
+    m.save_session([("user", "old question"), ("assistant", "old answer")])
+    m.save_session([("user", "Where is Kharkiv?"), ("assistant", "In Ukraine."), ("user", "Thanks")])
+    recent = m.recent()
+    assert [text for _, _, text in recent] == ["Where is Kharkiv?", "In Ukraine.", "Thanks"]
+    assert m.recent(now=time.time() + 7200) == []
+    text = m.prompt_text()
+    assert "Recent conversations" in text and "User: Thanks" in text and "Cedar" not in text
+
+
+def test_memory_in_instructions(tmp_path):
+    text = build_instructions(str(tmp_path / "none.md"), memory="Long-term memory:\n[1] Cat is Murka.")
+    assert text.endswith("[1] Cat is Murka.")
+    assert "end_session" in text
+
+
+def test_memory_tools_registered(tmp_path):
+    import asyncio
+    import json
+
+    from voicebot.memory import Memory
+    from voicebot.tools import default_registry
+
+    reg = default_registry(Memory(str(tmp_path / "mem")))
+    assert {"end_session", "remember", "forget"} <= set(reg.names())
+    out = json.loads(asyncio.run(reg.call("remember", json.dumps({"fact": "Dog is Rex."}))))
+    assert out["status"] == "remembered"
+    out = json.loads(asyncio.run(reg.call("forget", json.dumps({"id": out["id"]}))))
+    assert out["status"] == "forgotten"
+
+
+def test_goodbye_ends_session_without_follow_up():
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.voicelive import VoiceLiveBrain
+    from voicebot.tools import default_registry
+    from voicebot.usage import TokenTotals
+
+    responses = []
+
+    class FakeConn:
+        conversation = NS(item=NS(create=None))
+        response = NS(create=lambda: responses.append(True))
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield NS(type="conversation.item.input_audio_transcription.completed", transcript="Пока, спасибо")
+            yield NS(type="response.audio_transcript.done", transcript="Пока!")
+            yield NS(type="response.function_call_arguments.done", name="end_session", arguments="{}", call_id="c")
+            yield NS(type="response.done", response=None)
+            await asyncio.sleep(0.05)
+
+    speaker = NS(play=lambda b: None, clear=lambda: None, is_playing=lambda: False)
+    session = SessionIO(
+        mic=None, speaker=speaker, instructions="", tools=default_registry(), stop=asyncio.Event(),
+        model="m", voice="v", thinking_sound=b"tick",
+    )
+    brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
+    assert session.end_ready is True
+    assert responses == []
+    assert session.history == [("user", "Пока, спасибо"), ("assistant", "Пока!")]

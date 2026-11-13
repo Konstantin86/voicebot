@@ -17,6 +17,12 @@ Language (most important rule):
   An English question about Ukraine gets an English answer.
 
 {knowledge}
+Memory and ending:
+- When the user asks you to remember something, call remember. When asked to forget, call forget
+  with the fact's id. Confirm in one short sentence.
+- When the user says goodbye or wants to stop, in any language, say a very short goodbye in their
+  language and call end_session.
+
 Style:
 - Keep replies short: one to three sentences, unless the user asks for more detail.
 - Speak naturally. No lists, markdown, emojis or URLs.
@@ -51,7 +57,9 @@ Knowledge:
 """
 
 
-def build_instructions(context_file: str, now: datetime | None = None, web_search: bool = False) -> str:
+def build_instructions(
+    context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = ""
+) -> str:
     now = (now or datetime.now()).astimezone()
     parts = [
         BASE_INSTRUCTIONS.replace("{knowledge}", KNOWLEDGE_SEARCH if web_search else KNOWLEDGE_OFFLINE),
@@ -66,4 +74,6 @@ def build_instructions(context_file: str, now: datetime | None = None, web_searc
         log.warning("context file %s not found", context_file)
     except OSError as e:
         log.warning("cannot read context file %s: %s", context_file, e)
+    if memory:
+        parts.append(memory)
     return "\n\n".join(parts)

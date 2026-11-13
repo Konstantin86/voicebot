@@ -20,6 +20,8 @@ class SessionIO:
     voice: str
     greeting: str | None = None  # if set, the bot says this first
     thinking_sound: bytes | None = None  # played while a tool runs
+    history: list[tuple[str, str]] = field(default_factory=list)  # (role, text) turns of this session
+    end_ready: bool = False  # the bot said goodbye and wants to hang up
     user_speaking: bool = False
     last_activity: float = field(default_factory=time.monotonic)
 

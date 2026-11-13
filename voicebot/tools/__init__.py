@@ -53,10 +53,14 @@ class ToolRegistry:
         return list(self._tools)
 
 
-def default_registry() -> ToolRegistry:
-    from . import web_search
+def default_registry(memory=None) -> ToolRegistry:
+    from . import memory_tools, web_search
 
     registry = ToolRegistry()
+    registry.register(memory_tools.end_session_tool())
+    if memory is not None:
+        for tool in memory_tools.make_tools(memory):
+            registry.register(tool)
     tools = web_search.from_env()
     for tool in tools:
         registry.register(tool)

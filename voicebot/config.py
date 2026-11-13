@@ -54,6 +54,9 @@ class Config:
     idle_timeout: float
     max_session: float
     state_file: str
+    memory_dir: str
+    memory_recent_hours: float
+    memory_recent_turns: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -81,6 +84,9 @@ class Config:
             idle_timeout=float(_env("IDLE_TIMEOUT", "30")),
             max_session=float(_env("MAX_SESSION", "900")),
             state_file=_env("STATE_FILE", "/var/lib/voicebot/state.json"),
+            memory_dir=_env("MEMORY_DIR", "/var/lib/voicebot/memory"),
+            memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
+            memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "20")),
         )
         if cfg.voice not in cfg.voices:
             cfg.voices.insert(0, cfg.voice)
