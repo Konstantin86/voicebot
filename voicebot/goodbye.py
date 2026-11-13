@@ -7,7 +7,7 @@ MAX_WORDS = 8
 # Whole phrases only; single words that also occur in normal sentences ("всё", "stop") are left out.
 PHRASES = [
     # English
-    "bye", "bye bye", "goodbye", "good bye", "see you", "see ya", "thats it", "thats all", "that is all",
+    "bye", "bye bye", "goodbye", "good bye", "see you", "see ya", "thats it", "that is it", "thats all", "that is all",
     "thats all for now", "im done", "i am done", "nothing else", "good night", "hang up",
     # Russian
     "пока", "пока пока", "до свидания", "это всё", "это все", "всё спасибо", "все спасибо", "спасибо всё",

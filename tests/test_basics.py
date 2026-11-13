@@ -680,7 +680,7 @@ def test_memory_files_are_private(tmp_path):
 def test_is_goodbye():
     from voicebot.goodbye import is_goodbye
 
-    for text in ["Bye.", "Thank you, that's it.", "Thanks, that's all for now", "OK, I'm done",
+    for text in ["Bye.", "Thank you, that's it.", "Thank you, that is it.", "Thanks, that's all for now", "OK, I'm done",
                  "Всё, спасибо, пока!", "Ну ладно, до свидания", "Спасибо, больше ничего",
                  "Дякую, це все", "На сьогодні все", "Бувай!", "Добре, на добраніч"]:
         assert is_goodbye(text), text
