@@ -49,5 +49,17 @@ class ToolRegistry:
             return json.dumps({"error": str(e)})
 
 
+    def names(self) -> list[str]:
+        return list(self._tools)
+
+
 def default_registry() -> ToolRegistry:
-    return ToolRegistry()
+    from . import web_search
+
+    registry = ToolRegistry()
+    search = web_search.from_env()
+    if search:
+        registry.register(search)
+    else:
+        log.info("web_search disabled (no TAVILY_API_KEY)")
+    return registry

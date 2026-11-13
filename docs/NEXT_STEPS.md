@@ -14,6 +14,8 @@ Until then:
 - A normal reboot returns to kernel 6.5. Either make 6.17 permanent or retest the Jabra on 6.5.
 
 ## Later stages
+See [ROADMAP.md](ROADMAP.md) for the full plan.
+
 - End the session when the user says goodbye (an `end_session` tool the model can call).
 - If gpt-realtime-mini mixes up facts too often, try gpt-realtime or gpt-realtime-2.1-mini (VOICELIVE_MODEL).
 - Tools: calendar, weather, web search, Home Assistant; RAG via Azure AI Search.

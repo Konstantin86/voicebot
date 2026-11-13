@@ -19,6 +19,7 @@ class SessionIO:
     model: str
     voice: str
     greeting: str | None = None  # if set, the bot says this first
+    thinking_sound: bytes | None = None  # played while a tool runs
     user_speaking: bool = False
     last_activity: float = field(default_factory=time.monotonic)
 

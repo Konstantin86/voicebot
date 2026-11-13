@@ -9,6 +9,8 @@ Azure Foundry Voice Live (`gpt-realtime-mini`) is the brain.
 - Dot button, only while no call is active: single press = next voice (it says its name),
   double press = switch between gpt-realtime-mini (one low beep) and gpt-realtime (two high beeps).
 
+Plans: [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Layout
 | Path | What |
 | --- | --- |

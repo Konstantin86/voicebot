@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 MIC_QUEUE_FRAMES = 100
 PLAYBACK_TAIL = 0.25
 DOUBLE_PRESS_SECONDS = 0.4
-CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART")
+CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING")
 
 
 class App:
@@ -152,12 +152,13 @@ class App:
         session = SessionIO(
             mic=mic,
             speaker=self.audio,
-            instructions=build_instructions(self.cfg.context_file),
+            instructions=build_instructions(self.cfg.context_file, web_search="web_search" in self.tools.names()),
             tools=self.tools,
             stop=stop,
             model=self.settings.model,
             voice=self.settings.voice,
             greeting=greeting,
+            thinking_sound=self.cue["THINKING"],
         )
         started = time.monotonic()
         log.info("session started")
