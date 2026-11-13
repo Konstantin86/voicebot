@@ -424,3 +424,62 @@ def test_price_lookup_end_to_end_sorted_cheapest_first():
     out = asyncio.run(main())
     assert requests[0]["include_domains"] == ["pn.com.ua"] and requests[0]["include_domains_mode"] == "restrict"
     assert [p["price_from"] for p in out["products"]] == [29999, 32499]
+
+
+
+def test_clean_site():
+    from voicebot.tools.web_search import clean_site
+
+    assert clean_site("https://www.Elmir.ua/videocards/") == "elmir.ua"
+    assert clean_site("elmir.ua") == "elmir.ua"
+    assert clean_site("Elmir") == ""
+    assert clean_site(None) == ""
+
+
+def test_site_search_restricts_and_is_not_reused():
+    import asyncio
+
+    from voicebot.tools import web_search as ws
+
+    bodies = []
+
+    class FakeResponse:
+        status = 200
+
+        async def json(self):
+            return {"answer": "a", "results": [{"url": "https://elmir.ua/x", "title": "t", "content": "c"}]}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeSession:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, json, headers):
+            bodies.append(json)
+            return FakeResponse()
+
+    async def main():
+        original = ws.aiohttp.ClientSession
+        ws.aiohttp.ClientSession = FakeSession
+        try:
+            tool = ws.make_tool("k", daily_limit=10, country="ukraine")
+            await tool.handler(query="rtx 5070 kharkiv", shopping=True)
+            await tool.handler(query="rtx 5070 kharkiv elmir.ua", shopping=True, site="elmir.ua")
+            await tool.handler(query="rtx 5070 kharkiv on elmir.ua", shopping=True, site="https://elmir.ua")
+        finally:
+            ws.aiohttp.ClientSession = original
+
+    asyncio.run(main())
+    assert len(bodies) == 2
+    assert bodies[1]["include_domains"] == ["elmir.ua"] and bodies[1]["include_domains_mode"] == "restrict"

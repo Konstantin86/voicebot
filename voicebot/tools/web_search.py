@@ -32,7 +32,8 @@ IGNORED_WORDS = {
 
 
 def query_words(query: str) -> frozenset[str]:
-    words = re.findall(r"\w+", query.lower())
+    query = re.sub(r"\b[\w-]+\.(?:ua|com|net|org)\b", " ", query.lower())
+    words = re.findall(r"\w+", query)
     return frozenset(w for w in words if w not in IGNORED_WORDS and not w.isdigit())
 
 
@@ -45,8 +46,17 @@ def similar(a: frozenset[str], b: frozenset[str]) -> bool:
 # Ukrainian shops and price comparison sites, preferred (not required) for shopping searches.
 SHOP_SITES = [
     "hotline.ua", "ek.ua", "rozetka.com.ua", "comfy.ua", "foxtrot.com.ua", "allo.ua",
-    "telemart.ua", "brain.com.ua", "moyo.ua", "citrus.com.ua", "prom.ua",
+    "telemart.ua", "brain.com.ua", "moyo.ua", "citrus.com.ua", "prom.ua", "elmir.ua",
 ]
+
+
+def clean_site(site: str | None) -> str:
+    """'https://www.Elmir.ua/x' -> 'elmir.ua'; '' when not a plausible domain."""
+    site = (site or "").strip().lower()
+    if "//" in site:
+        site = urlparse(site).netloc
+    site = site.split("/")[0].removeprefix("www.")
+    return site if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", site) else ""
 
 
 def site_name(url: str | None) -> str | None:
@@ -73,6 +83,10 @@ PARAMETERS = {
             "type": "boolean",
             "description": "True for where-to-buy, shop, availability or product price questions.",
         },
+        "site": {
+            "type": "string",
+            "description": "Search only this website, e.g. 'elmir.ua', when the user names a site.",
+        },
     },
     "required": ["query"],
 }
@@ -98,12 +112,15 @@ def make_tool(
     api_key: str, daily_limit: int, depth: str = "basic", country: str = "", limiter: DailyLimit | None = None
 ) -> Tool:
     limiter = limiter or DailyLimit(daily_limit)
-    recent: list[tuple[float, tuple[str, bool], frozenset[str], asyncio.Task]] = []
+    recent: list[tuple[float, tuple[str, bool, str], frozenset[str], asyncio.Task]] = []
 
-    async def web_search(query: str, topic: str = "general", shopping: bool = False) -> dict[str, Any]:
+    async def web_search(
+        query: str, topic: str = "general", shopping: bool = False, site: str = ""
+    ) -> dict[str, Any]:
         """Reuses a running or recent search for a near-identical query (the model sometimes asks twice)."""
         topic = topic if topic in ("general", "news") else "general"
-        kind = (topic, bool(shopping))
+        site = clean_site(site)
+        kind = (topic, bool(shopping), site)
         now = time.monotonic()
         recent[:] = [r for r in recent if now - r[0] < REUSE_SECONDS]
         words = query_words(query)
@@ -111,11 +128,11 @@ def make_tool(
             if old_kind == kind and similar(words, old_words):
                 log.info("web_search %r: reusing a recent search", query)
                 return await asyncio.shield(task)
-        task = asyncio.ensure_future(search(query, topic, bool(shopping)))
+        task = asyncio.ensure_future(search(query, topic, bool(shopping), site))
         recent.append((now, kind, words, task))
         return await asyncio.shield(task)
 
-    async def search(query: str, topic: str, shopping: bool) -> dict[str, Any]:
+    async def search(query: str, topic: str, shopping: bool, site: str) -> dict[str, Any]:
         if not limiter.take():
             log.warning("web_search: daily limit of %d reached", daily_limit)
             return {"error": "Daily search limit reached. Tell the user you cannot search any more today."}
@@ -129,7 +146,10 @@ def make_tool(
         }
         if country and topic == "general":
             body["country"] = country
-        if shopping:
+        if site:
+            body["include_domains"] = [site]
+            body["include_domains_mode"] = "restrict"
+        elif shopping:
             body["include_domains"] = SHOP_SITES
             body["include_domains_mode"] = "prefer"
         started = time.monotonic()
@@ -146,8 +166,8 @@ def make_tool(
             return {"error": "Search service did not respond."}
         results = data.get("results", [])
         log.info(
-            "web_search %r (%s%s): %d results in %.1f s, %d searches today, sites: %s",
-            query, topic, ", shopping" if shopping else "", len(results), time.monotonic() - started,
+            "web_search %r (%s%s%s): %d results in %.1f s, %d searches today, sites: %s",
+            query, topic, ", shopping" if shopping else "", f", site {site}" if site else "", len(results), time.monotonic() - started,
             limiter.count, ", ".join(filter(None, (site_name(r.get("url")) for r in results))),
         )
         return {
