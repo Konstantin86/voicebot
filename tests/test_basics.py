@@ -796,3 +796,76 @@ def test_detect_language_by_common_words():
     assert detect_language("Підкажи, коли буде Пасха") == "Ukrainian"
     assert detect_language("What's the weather?") == "English"
     assert detect_language("Зразумела") is None
+
+
+def test_tv_find_by_name():
+    from voicebot.tools.tv import find_by_name
+
+    apps = {"youtube.leanback.v4": "YouTube", "netflix": "Netflix", "com.apple.appletv": "Apple TV"}
+    assert find_by_name("youtube", apps) == "youtube.leanback.v4"
+    assert find_by_name("Netflix app", apps) == "netflix"
+    inputs = {"com.webos.app.hdmi1": "PS5 Игровая консоль", "com.webos.app.hdmi2": "HDMI 2"}
+    assert find_by_name("PS5", inputs) == "com.webos.app.hdmi1"
+    assert find_by_name("hdmi 2", inputs) == "com.webos.app.hdmi2"
+    assert find_by_name("hdmi1", inputs) == "com.webos.app.hdmi1"
+    assert find_by_name("Disney", apps) is None
+
+
+def test_youtube_id_from_url():
+    from voicebot.tools.web_search import YOUTUBE_ID
+
+    assert YOUTUBE_ID.search("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1").group(1) == "dQw4w9WgXcQ"
+    assert YOUTUBE_ID.search("https://youtu.be/dQw4w9WgXcQ").group(1) == "dQw4w9WgXcQ"
+    assert YOUTUBE_ID.search("https://www.youtube.com/@channel") is None
+
+
+def test_tv_settings_file_is_private(tmp_path):
+    import os
+    from voicebot.tools.tv import load_settings, make_tool, save_settings
+
+    path = str(tmp_path / "tv.json")
+    assert make_tool(path) is None
+    save_settings(path, {"host": "1.2.3.4", "mac": "aa:bb:cc:dd:ee:ff", "client_key": "k"})
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert load_settings(path)["host"] == "1.2.3.4"
+    assert make_tool(path).name == "tv"
+
+
+def test_youtube_finder_channel_latest(monkeypatch):
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from voicebot.tools import youtube
+
+    calls = []
+
+    async def handler(request):
+        q = dict(request.query)
+        calls.append(q)
+        if q["type"] == "channel":
+            return web.json_response({"items": [{"id": {"channelId": "C1"},
+                                                 "snippet": {"channelId": "C1", "channelTitle": "MrBeast"}}]})
+        return web.json_response({"items": [{"id": {"videoId": "abcdefghijk"},
+                                             "snippet": {"title": "I &quot;Won&quot;", "channelTitle": "MrBeast",
+                                                         "publishedAt": "2026-11-10T12:00:00Z"}}]})
+
+    async def run():
+        app = web.Application()
+        app.router.add_get("/search", handler)
+        async with TestServer(app) as server:
+            monkeypatch.setattr(youtube, "SEARCH_URL", str(server.make_url("/search")))
+            find = youtube.make_video_finder("KEY", quota=youtube.Quota(limit=1000))
+            return await find(channel="mr beast", latest=True)
+
+    video = asyncio.run(run())
+    assert video == {"id": "abcdefghijk", "title": 'I "Won"', "channel": "MrBeast", "published": "2026-11-10"}
+    assert calls[1]["channelId"] == "C1" and calls[1]["order"] == "date" and "q" not in calls[1]
+
+
+def test_youtube_quota():
+    from voicebot.tools.youtube import Quota
+
+    quota = Quota(limit=250)
+    assert quota.take(100) and quota.take(100) and not quota.take(100)

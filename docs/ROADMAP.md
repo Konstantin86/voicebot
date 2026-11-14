@@ -68,3 +68,5 @@ Memory + `end_session` (1, 2) → weather and timers (3) → wake word (5).
 - ✅ Memory: remember/forget facts, recent conversations (12 h); end the call by saying goodbye.
 - ✅ Weather tool; strict shopping prices (only from cheapest_offers / price_lookup).
 - ✅ Wake word (English, Russian, Ukrainian); replies start after the transcript, with a per-turn language rule.
+- ✅ LG TV control (webOS): on/off (Wake-on-LAN), apps, inputs, volume, pause/play; YouTube videos by
+  search, channel or "latest" (YouTube Data API), passing YouTube's account screen.

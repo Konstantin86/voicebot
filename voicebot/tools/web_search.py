@@ -223,13 +223,46 @@ def make_tool(
     return Tool(name="web_search", description=DESCRIPTION, parameters=PARAMETERS, handler=web_search)
 
 
-def from_env() -> list[Tool]:
-    """web_search and price_lookup, sharing one daily search limit. Empty without TAVILY_API_KEY."""
+YOUTUBE_ID = re.compile(r"(?:youtube\.com/watch\?(?:.*&)?v=|youtu\.be/|youtube\.com/shorts/)([\w-]{11})")
+
+
+def make_video_finder(api_key: str, limiter: DailyLimit):
+    """Returns find_video(query) -> {"id", "title"} using one search limited to youtube.com."""
+
+    async def find_video(query: str = "", channel: str = "", latest: bool = False) -> dict[str, Any]:
+        query = " ".join(filter(None, [channel, query, "latest" if latest else ""]))
+        if not limiter.take():
+            return {"error": "Daily search limit reached."}
+        body = {"query": query, "max_results": 5, "include_domains": ["youtube.com", "youtu.be"]}
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)) as http:
+                async with http.post(URL, json=body, headers={"Authorization": f"Bearer {api_key}"}) as resp:
+                    if resp.status != 200:
+                        log.warning("video search: HTTP %d", resp.status)
+                        return {"error": "Video search failed."}
+                    data = await resp.json()
+        except (aiohttp.ClientError, TimeoutError) as e:
+            log.warning("video search: %s", e)
+            return {"error": "Video search did not respond."}
+        for r in data.get("results", []):
+            match = YOUTUBE_ID.search(r.get("url") or "")
+            if match:
+                log.info("video search %r: %s %s", query, match.group(1), r.get("title"))
+                return {"id": match.group(1), "title": r.get("title")}
+        log.info("video search %r: no video", query)
+        return {}
+
+    return find_video
+
+
+def from_env() -> tuple[list[Tool], Any]:
+    """web_search and price_lookup sharing one daily search limit, plus a YouTube video finder
+    using the same limit. ([], None) without TAVILY_API_KEY."""
     from . import price_lookup
 
     key = os.environ.get("TAVILY_API_KEY", "").strip()
     if not key:
-        return []
+        return [], None
     daily_limit = int(os.environ.get("SEARCH_DAILY_LIMIT", "50"))
     limiter = DailyLimit(daily_limit)
     search = make_tool(
@@ -239,4 +272,4 @@ def from_env() -> list[Tool]:
         country=os.environ.get("SEARCH_COUNTRY", "ukraine").strip(),
         limiter=limiter,
     )
-    return [search, price_lookup.make_tool(key, limiter)]
+    return [search, price_lookup.make_tool(key, limiter)], make_video_finder(key, limiter)

@@ -54,7 +54,9 @@ class ToolRegistry:
 
 
 def default_registry(memory=None, weather_home: str = "", weather_detect_home: bool = False) -> ToolRegistry:
-    from . import memory_tools, weather, web_search
+    import os
+
+    from . import memory_tools, tv, weather, web_search, youtube
 
     registry = ToolRegistry()
     registry.register(memory_tools.end_session_tool())
@@ -62,9 +64,16 @@ def default_registry(memory=None, weather_home: str = "", weather_detect_home: b
     if memory is not None:
         for tool in memory_tools.make_tools(memory):
             registry.register(tool)
-    tools = web_search.from_env()
+    tools, tavily_video_finder = web_search.from_env()
     for tool in tools:
         registry.register(tool)
     if not tools:
         log.info("web_search and price_lookup disabled (no TAVILY_API_KEY)")
+    youtube_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    find_video = youtube.make_video_finder(youtube_key) if youtube_key else tavily_video_finder
+    tv_tool = tv.make_tool(os.environ.get("TV_SETTINGS", "/var/lib/voicebot/tv.json"), find_video)
+    if tv_tool:
+        registry.register(tv_tool)
+        log.info("tv tool enabled; video search: %s",
+                 "YouTube API" if youtube_key else "web search" if find_video else "none")
     return registry
