@@ -17,16 +17,18 @@ from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
 from .voice_preview import VoicePreviews
-from . import archive, speakers, wake
+from . import archive, reminders, speakers, wake
 
 log = logging.getLogger(__name__)
 
 MIC_QUEUE_FRAMES = 400  # 8 s: holds what is said right after the wake word while connecting
 PLAYBACK_TAIL = 0.25
 MIN_SENTENCES_TO_SUMMARISE = 2
+RING_SECONDS = {"alarm": 180, "timer": 60, "reminder": 0}  # how long it keeps repeating until stopped
+RING_PAUSE = 2.0
 MIN_CHARS_TO_SUMMARISE = 60
 DOUBLE_PRESS_SECONDS = 0.4
-CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING")
+CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING", "REMINDER", "ALARM")
 
 
 class App:
@@ -52,6 +54,10 @@ class App:
         if self.archive:
             self.tools.register(archive.search_tool(self.archive))
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
+        self.reminders = reminders.Reminders(cfg.reminders_file)
+        self.tools.register(reminders.make_tool(
+            self.reminders, self._reminder_audio if hasattr(self.brain, "say") else None))
+        self._ring_stop: asyncio.Event | None = None
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)
             for name in CUES
@@ -129,6 +135,8 @@ class App:
         )
         if start_now:
             self._on_button("toggle")
+        reminder_task = asyncio.create_task(self._reminder_loop())
+        self._background.add(reminder_task)
         if self.previews:
             task = asyncio.create_task(self.previews.prepare(self.settings.voices))
             self._background.add(task)
@@ -151,6 +159,12 @@ class App:
 
     def _on_button(self, event: str) -> None:
         log.info("button: %s", event)
+        if self._ring_stop and not self._ring_stop.is_set() and event not in ("volume_up", "volume_down"):
+            log.info("reminders: stopped by a button")
+            self._ring_stop.set()
+            if event == "hook_on":
+                self.hook.set_off_hook_light(False)
+            return
         if event in ("volume_up", "volume_down"):
             self._change_volume(+1 if event == "volume_up" else -1)
         elif event == "play_pause":
@@ -170,6 +184,10 @@ class App:
 
     def _on_wake(self, name: str) -> None:
         log.info("wake word: %s", name)
+        if self._ring_stop and not self._ring_stop.is_set():
+            log.info("reminders: stopped by the wake word")
+            self._ring_stop.set()
+            return
         if not self._active():
             self._start_session(from_wake=True)
 
@@ -226,6 +244,66 @@ class App:
                     self.audio.play(clip)
                 else:
                     self._start_session(greeting=f"Hi, I'm {voice_display_name(voice)}.")
+
+    async def _reminder_audio(self, item: reminders.Reminder) -> None:
+        try:
+            pcm = await self.brain.say(item.text, self.settings.voice, self.cfg.model)
+            await asyncio.to_thread(self.reminders.save_audio, item, pcm)
+        except Exception as e:
+            log.warning("reminders: could not make the spoken text for #%d (will chime only): %s", item.id, e)
+
+    async def _reminder_loop(self) -> None:
+        """Checks the list every second; a due one waits until no conversation is running."""
+        while True:
+            await asyncio.sleep(1)
+            now = time.time()
+            for item in self.reminders.due_now(now):
+                if self.reminders.is_stale(item, now):
+                    log.info("reminders: %s #%d was due long ago (Pi off?); skipping it", item.kind, item.id)
+                    self.reminders.finished(item)
+                    continue
+                if self._dot_lock.locked():
+                    break
+                try:
+                    if self._active():
+                        # During a conversation: say it once, between the bot's sentences.
+                        log.info("reminders: %s #%d is due during a conversation: %s", item.kind, item.id, item.text)
+                        while self.audio.is_playing():
+                            await asyncio.sleep(0.1)
+                        self.audio.play(self.cue["REMINDER"] + (self.reminders.audio(item) or b""))
+                    else:
+                        await self._ring(item)
+                except Exception:
+                    log.exception("reminders: could not play #%d", item.id)
+                self.reminders.finished(item)
+
+    async def _ring(self, item: reminders.Reminder) -> None:
+        log.info("reminders: %s #%d is due: %s", item.kind, item.id, item.text)
+        speech = self.reminders.audio(item)
+        cue = self.cue["ALARM" if item.kind == "alarm" else "REMINDER"]
+        self._ring_stop = stop = asyncio.Event()
+        if self.wake:
+            self.wake.pause()  # the bot's own voice must not wake it
+        try:
+            until = time.monotonic() + RING_SECONDS[item.kind]
+            while not stop.is_set():
+                self.audio.play(cue + (speech or b""))
+                while self.audio.is_playing() and not stop.is_set():
+                    await asyncio.sleep(0.05)
+                if self.wake:
+                    self.wake.resume()  # between rounds, the wake word stops it
+                if time.monotonic() >= until:
+                    break
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop.wait(), RING_PAUSE)
+                if self.wake and not stop.is_set():
+                    self.wake.pause()
+        finally:
+            if stop.is_set():
+                self.audio.clear()
+            self._ring_stop = None
+            if not self._active():
+                self._listen_for_wake_word()
 
     def _change_volume(self, step: int) -> None:
         sign = "+" if step > 0 else "-"

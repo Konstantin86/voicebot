@@ -32,8 +32,10 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
      (website data feed; filters out accessories, boxes, buy ads and, for parts, whole PCs).
    - ✅ AUTO.RIA used cars (official API): listings with year, price, mileage, city, seller damage marks
      and listing checks; "more options", "without accidents"; 30-minute cache and hourly-limit handling.
-   - ⬜ Timers, alarms, reminders. Needs the bot to speak unprompted: play a sound, or open a short
-     Azure session to say the reminder.
+   - ✅ Timers, reminders and alarms (shared by the household): set, list and cancel by voice; once, daily,
+     weekdays or weekends. The spoken sentence is made when set (~$0.0005) and played by the Pi when due;
+     alarms ring up to 3 min, timers 1 min, until a button or the wake word stops them. Said during a
+     conversation if one is running.
    - ⬜ Calendar (Outlook or Google): "What's on tomorrow?"
 4. ⬜ **Morning brief:** at a set time, speak the weather, today's calendar and headlines.
 
@@ -130,7 +132,7 @@ Status ⬜ unless marked. Numbers are for reference, not order.
   report, ask the bot from outside with the same memory.
 
 ## Suggested order
-Air raid alerts (B1) → reminders with Telegram (3, B15, B16) → TV sleep timer and continue watching (B5, B6)
+Air raid alerts (B1) → Telegram (B15, B16) → TV sleep timer and continue watching (B5, B6)
 → morning brief (4) → deployment (12).
 
 ## Done so far

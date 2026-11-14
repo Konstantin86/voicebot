@@ -1645,3 +1645,61 @@ def test_world_time_from_local_clock():
     out = world_time("Pacific/Auckland", "New Zealand", now=now)
     assert out["time_there"] == "11:50" and out["date_there"].startswith("Sunday, 15 November")
     assert "error" in world_time("Middle/Earth")
+
+
+def test_reminder_times():
+    from datetime import datetime
+
+    from voicebot.reminders import next_time, parse_due
+
+    now = datetime(2026, 11, 15, 22, 30)  # a Sunday
+    assert parse_due(in_minutes=10, now=now) == datetime(2026, 11, 15, 22, 40)
+    assert parse_due("23:00", now=now) == datetime(2026, 11, 15, 23, 0)
+    assert parse_due("07:00", now=now) == datetime(2026, 11, 16, 7, 0)
+    assert parse_due("2026-11-20 18:30", now=now) == datetime(2026, 11, 20, 18, 30)
+    assert parse_due("07:00", repeat="weekends", now=now) == datetime(2026, 11, 21, 7, 0)
+    assert next_time(datetime(2026, 11, 20, 7, 0), "weekdays") == datetime(2026, 11, 23, 7, 0)
+    for bad in ({"at": "2020-01-01 10:00"}, {"at": "soon"}, {"in_minutes": 0}):
+        try:
+            parse_due(now=now, **bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_reminders_tool_add_list_cancel_and_finish(tmp_path):
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from voicebot.reminders import Reminders, make_tool
+
+    store = Reminders(str(tmp_path / "reminders.json"))
+    made = []
+
+    async def make_audio(item):
+        made.append(item.id)
+        store.save_audio(item, b"\x01\x00")
+
+    tool = make_tool(store, make_audio)
+
+    async def run():
+        timer = await tool.handler(action="add", kind="timer", text="Макароны готовы.", label="pasta", in_minutes=10)
+        alarm = await tool.handler(action="add", kind="alarm", text="Пора вставать.", at="07:00", repeat="weekdays")
+        bad = await tool.handler(action="add", kind="timer", text="", in_minutes=5)
+        await asyncio.sleep(0.01)
+        listed = await tool.handler(action="list")
+        return timer, alarm, bad, listed
+
+    timer, alarm, bad, listed = asyncio.run(run())
+    assert timer["status"] == "set" and "in 10 min" in timer["when"] and "error" in bad
+    assert [i["kind"] for i in listed["items"]] == ["timer", "alarm"] and store.items[0].person is None
+    assert made == [1, 2] and store.audio(store.items[0]) == b"\x01\x00"
+
+    again = Reminders(str(tmp_path / "reminders.json"))
+    assert [r.text for r in again.upcoming()] == ["Макароны готовы.", "Пора вставать."]
+    first_due = store.items[1].due
+    store.finished(store.items[1])  # repeating: moves to the next weekday
+    assert store.items[1].due > first_due and len(store.items) == 2
+    store.finished(store.items[0])  # one-off: removed with its audio
+    assert [r.kind for r in store.items] == ["alarm"] and not (tmp_path / "reminders" / "1.pcm").exists()
+    assert asyncio.run(tool.handler(action="cancel", id=2))["status"] == "cancelled" and store.items == []
