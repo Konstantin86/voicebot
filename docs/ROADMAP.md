@@ -18,7 +18,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 4. ⬜ **Morning brief:** at a set time, speak the weather, today's calendar and headlines.
 
 ## Phase 2: Truly hands-free
-5. ⬜ **Wake word** ("Hey Jarvis" or a custom name) with openWakeWord on the Pi 5 CPU.
+5. ✅ **Wake word:** "Hey Jarvis" (openWakeWord) and "Привет/Привіт, Джарвис" (Vosk), all on the Pi CPU.
    The mic listens locally; nothing goes to Azure until the wake word. The call button stays as backup.
 6. ⬜ **Who is speaking:** voice fingerprints per family member, computed on the Pi.
    The bot knows who asked: name, calendar, language, kids mode.
@@ -67,3 +67,4 @@ Memory + `end_session` (1, 2) → weather and timers (3) → wake word (5).
 - ✅ Price Navigator (pn.com.ua) prices, single-site search, cheapest offers.
 - ✅ Memory: remember/forget facts, recent conversations (12 h); end the call by saying goodbye.
 - ✅ Weather tool; strict shopping prices (only from cheapest_offers / price_lookup).
+- ✅ Wake word (English, Russian, Ukrainian); replies start after the transcript, with a per-turn language rule.

@@ -1,10 +1,11 @@
 import asyncio
 import base64
 import logging
+import time
 from typing import Any
 
 from azure.ai.voicelive.aio import connect
-from azure.ai.voicelive.models import FunctionCallOutputItem
+from azure.ai.voicelive.models import FunctionCallOutputItem, InputTextContentPart, SystemMessageItem
 from azure.ai.voicelive.models import ServerEventType as E
 from azure.core.credentials import AzureKeyCredential
 
@@ -21,6 +22,7 @@ MIC_FRAMES_PER_MESSAGE = 2
 TRANSCRIPT_WAIT_SECONDS = 2
 GOODBYE_REPLY_START_SECONDS = 2
 GOODBYE_REPLY_MAX_SECONDS = 15
+REPLY_WITHOUT_TRANSCRIPT_SECONDS = 2.0
 
 
 def tool_output_item(call_id: str, output: str) -> FunctionCallOutputItem:
@@ -79,6 +81,8 @@ class VoiceLiveBrain:
             "type": cfg.turn_detection,
             "interrupt_response": True,
             "silence_duration_ms": cfg.turn_silence_ms,
+            # Replies are started by us once the transcript is in, so the reply language can be set.
+            "create_response": False,
         }
         if cfg.turn_detection != "server_vad":
             turn_detection["auto_truncate"] = True
@@ -138,17 +142,29 @@ class VoiceLiveBrain:
                 elif kind == E.INPUT_AUDIO_BUFFER_SPEECH_STOPPED:
                     s.user_speaking = False
                     turn.transcript_ready.clear()
+                    turn.number += 1
+                    turn.awaiting_reply = True
+                    turn.stopped_at = time.monotonic()
+                    spawn(self._reply_if_no_transcript(conn, turn, turn.number))
                     s.touch()
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED:
                     turn.user_text = event.transcript.strip()
                     turn.transcript_ready.set()
                     s.history.append(("user", turn.user_text))
                     log.info("user: %s", turn.user_text)
+                    language = detect_language(turn.user_text)
+                    if language:
+                        turn.language = language
+                    if turn.user_text:
+                        await self._reply(conn, turn)
+                    else:
+                        turn.awaiting_reply = False  # only noise was heard
                     if is_goodbye(turn.user_text):
                         log.info("goodbye heard; hanging up after the reply")
                         spawn(self._end_after_reply(s, turn))
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_FAILED:
                     turn.transcript_ready.set()
+                    await self._reply(conn, turn)
                 elif kind == E.RESPONSE_AUDIO_TRANSCRIPT_DONE:
                     s.history.append(("assistant", event.transcript.strip()))
                     log.info("assistant: %s", event.transcript.strip())
@@ -173,7 +189,7 @@ class VoiceLiveBrain:
                     if end_requested:
                         s.end_ready = True
                     elif tool_tasks:
-                        spawn(self._respond_after(conn, tool_tasks))
+                        spawn(self._respond_after(conn, turn, tool_tasks))
                         tool_tasks = []
                 elif kind == E.SESSION_UPDATED:
                     log.info("voice live session ready (model %s, voice %s)", s.model, s.voice)
@@ -192,10 +208,9 @@ class VoiceLiveBrain:
             await asyncio.wait_for(turn.transcript_ready.wait(), TRANSCRIPT_WAIT_SECONDS)
         except asyncio.TimeoutError:
             pass
-        language = detect_language(turn.user_text)
-        if language:
-            log.info("reply language hint: %s", language)
-        await conn.conversation.item.create(item=tool_output_item(event.call_id, add_language_hint(output, language)))
+        await conn.conversation.item.create(
+            item=tool_output_item(event.call_id, add_language_hint(output, turn.language))
+        )
         s.touch()
 
     async def _end_after_reply(self, s: SessionIO, turn: "_Turn") -> None:
@@ -213,17 +228,50 @@ class VoiceLiveBrain:
             pass
         s.end_ready = True
 
-    async def _respond_after(self, conn, tool_tasks: list[asyncio.Task]) -> None:
+    async def _respond_after(self, conn, turn: "_Turn", tool_tasks: list[asyncio.Task]) -> None:
         results = await asyncio.gather(*tool_tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 log.error("tool failed: %r", result)
-        await conn.response.create()
+        await self._create_response(conn, turn)
+
+    async def _create_response(self, conn, turn: "_Turn") -> None:
+        """The language rule goes in twice: as the newest message (the model follows recent context
+        most) and as extra instructions for this response."""
+        rule = _language_rule(turn.language)
+        if rule:
+            await conn.conversation.item.create(item=SystemMessageItem(content=[InputTextContentPart(text=rule)]))
+        await conn.response.create(additional_instructions=rule)
+
+    async def _reply(self, conn, turn: "_Turn") -> None:
+        """Starts the reply to the user's last turn (once per turn), in the user's language."""
+        if not turn.awaiting_reply:
+            return
+        turn.awaiting_reply = False
+        log.info("reply started %.1f s after speech ended, language %s",
+                 time.monotonic() - turn.stopped_at, turn.language or "not detected")
+        await self._create_response(conn, turn)
+
+    async def _reply_if_no_transcript(self, conn, turn: "_Turn", number: int) -> None:
+        await asyncio.sleep(REPLY_WITHOUT_TRANSCRIPT_SECONDS)
+        if turn.number == number and turn.awaiting_reply and not turn.transcript_ready.is_set():
+            log.warning("no transcript in %.0f s; replying without it", REPLY_WITHOUT_TRANSCRIPT_SECONDS)
+            await self._reply(conn, turn)
+
+
+def _language_rule(language: str | None) -> str | None:
+    if not language:
+        return None
+    return f"The user's last utterance was in {language}. Reply only in {language}, whatever language was used before."
 
 
 class _Turn:
     def __init__(self) -> None:
         self.user_text = ""
+        self.language: str | None = None  # last detected; kept when a turn is unclear
+        self.number = 0  # counts the user's finished turns
+        self.awaiting_reply = False  # the user's finished turn has no reply yet
+        self.stopped_at = 0.0
         self.transcript_ready = asyncio.Event()
         self.transcript_ready.set()
         self.responding = asyncio.Event()

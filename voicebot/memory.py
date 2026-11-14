@@ -161,7 +161,8 @@ class Memory:
                 lines.append(f"{'User' if role == 'user' else 'You'}: {text}")
             parts.append(
                 "Recent conversations (earlier sessions today; use only if relevant, "
-                "do not bring them up unprompted):\n" + "\n".join(lines)
+                "do not bring them up unprompted). Your past replies below may be in the wrong language; "
+                "never copy their language:\n" + "\n".join(lines)
             )
         return "\n\n".join(parts)
 

@@ -15,10 +15,11 @@ from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
+from . import wake
 
 log = logging.getLogger(__name__)
 
-MIC_QUEUE_FRAMES = 100
+MIC_QUEUE_FRAMES = 400  # 8 s: holds what is said right after the wake word while connecting
 PLAYBACK_TAIL = 0.25
 DOUBLE_PRESS_SECONDS = 0.4
 CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING")
@@ -50,6 +51,7 @@ class App:
         self._restarting = False
         self._dot_timer: asyncio.TimerHandle | None = None
         self._dot_lock = asyncio.Lock()
+        self.wake: wake.WakeListener | None = None
 
     async def run(self, start_now: bool = False) -> None:
         loop = asyncio.get_running_loop()
@@ -57,7 +59,17 @@ class App:
         def from_thread(event: str) -> None:
             loop.call_soon_threadsafe(self._on_button, event)
 
+        if self.cfg.wake_word:
+            self.wake = wake.build(
+                self.cfg.models_dir,
+                lambda name: loop.call_soon_threadsafe(self._on_wake, name),
+                self.cfg.wake_threshold,
+                self.cfg.wake_phrases,
+            )
         self.audio.start()
+        if self.wake:
+            self.wake.start()
+            self._listen_for_wake_word()
         self.hook = HookButtons(self.cfg.jabra_name, from_thread)
         readers = [self.hook, MediaKeys(self.cfg.jabra_name, from_thread)]
         for reader in readers:
@@ -65,7 +77,11 @@ class App:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self._shutdown.set)
         loop.add_signal_handler(signal.SIGUSR1, self._on_button, "toggle")
-        log.info("ready: press the call button to talk (model %s, voice %s)", self.settings.model, self.settings.voice)
+        log.info(
+            "ready: %s (model %s, voice %s)",
+            "say the wake word or press call" if self.wake else "press the call button to talk",
+            self.settings.model, self.settings.voice,
+        )
         if start_now:
             self._on_button("toggle")
 
@@ -77,6 +93,8 @@ class App:
                 await asyncio.wait_for(self._session_task, 10)
         for reader in readers:
             reader.stop()
+        if self.wake:
+            self.wake.stop()
         self.audio.stop()
 
     def _active(self) -> bool:
@@ -95,9 +113,24 @@ class App:
         elif event == "hook_off":
             self.hook.set_off_hook_light(False)
 
-    def _start_session(self, greeting: str | None = None) -> None:
+    def _start_session(self, greeting: str | None = None, from_wake: bool = False) -> None:
+        if self.wake:
+            self.wake.pause()
         self._session_stop = asyncio.Event()
-        self._session_task = asyncio.create_task(self._session(self._session_stop, greeting))
+        self._session_task = asyncio.create_task(self._session(self._session_stop, greeting, from_wake))
+
+    def _on_wake(self, name: str) -> None:
+        log.info("wake word: %s", name)
+        if not self._active():
+            self._start_session(from_wake=True)
+
+    def _listen_for_wake_word(self) -> None:
+        """Between sessions, mic frames go to the wake word listener."""
+        if self.wake:
+            self.audio.set_mic_callback(self.wake.feed)
+            self.wake.resume()
+        else:
+            self.audio.set_mic_callback(None)
 
     async def _stop_session(self) -> None:
         if self._active():
@@ -151,7 +184,7 @@ class App:
             await asyncio.sleep(0.02)
         await asyncio.sleep(PLAYBACK_TAIL)
 
-    async def _session(self, stop: asyncio.Event, greeting: str | None = None) -> None:
+    async def _session(self, stop: asyncio.Event, greeting: str | None = None, from_wake: bool = False) -> None:
         loop = asyncio.get_running_loop()
         mic: asyncio.Queue = asyncio.Queue(maxsize=MIC_QUEUE_FRAMES)
 
@@ -176,11 +209,20 @@ class App:
             thinking_sound=self.cue["THINKING"],
         )
         started = time.monotonic()
-        log.info("session started")
+        log.info("session started%s", " by wake word" if from_wake else "")
         self.hook.set_off_hook_light(True)
+
+        def forward_mic() -> None:
+            self.audio.set_mic_callback(lambda frame: loop.call_soon_threadsafe(put_frame, frame))
+
+        if from_wake:
+            # The question usually follows the wake word at once: keep it while the beep plays
+            # and the connection opens (the Jabra's echo cancelling removes the beep).
+            forward_mic()
         await self._play_cue("START")
         session.touch()
-        self.audio.set_mic_callback(lambda frame: loop.call_soon_threadsafe(put_frame, frame))
+        if not from_wake:
+            forward_mic()
         brain_task = asyncio.create_task(self.brain.run_session(session))
         stop_wait = asyncio.create_task(stop.wait())
         reason = "unknown"
@@ -225,3 +267,5 @@ class App:
             await self._play_cue("ERROR" if failed else "END")
             self.memory.save_session(session.history)
             log.info("session ended (%s) after %.0f s", reason, time.monotonic() - started)
+            if not self._restarting:
+                self._listen_for_wake_word()

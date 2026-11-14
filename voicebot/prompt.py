@@ -65,6 +65,12 @@ Knowledge:
 """
 
 
+LANGUAGE_REMINDER = (
+    "Reminder: reply in the language of the user's last utterance (English, Ukrainian or Russian). "
+    "A Russian question gets a Russian answer, even in Ukraine and even if earlier replies were Ukrainian."
+)
+
+
 def build_instructions(
     context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = ""
 ) -> str:
@@ -84,4 +90,5 @@ def build_instructions(
         log.warning("cannot read context file %s: %s", context_file, e)
     if memory:
         parts.append(memory)
+    parts.append(LANGUAGE_REMINDER)
     return "\n\n".join(parts)

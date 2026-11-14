@@ -143,7 +143,7 @@ def test_detect_language():
     assert detect_language("What's the latest news in Ukraine?") == "English"
     assert detect_language("Які останні новини?") == "Ukrainian"
     assert detect_language("Ты умеешь выходить в интернет?") == "Russian"
-    assert detect_language("Привет, как дела") is None
+    assert detect_language("Привет, как дела") == "Russian"
     assert detect_language("") is None
 
 
@@ -179,8 +179,8 @@ def test_tool_flow_adds_language_hint_and_responds():
         async def _create(self, item):
             created.append(item.as_dict())
 
-        async def _respond(self):
-            responses.append(True)
+        async def _respond(self, *, response=None, event_id=None, additional_instructions=None):
+            responses.append(additional_instructions)
 
         def __aiter__(self):
             return self._gen()
@@ -193,9 +193,9 @@ def test_tool_flow_adds_language_hint_and_responds():
 
     events = [
         (0, NS(type="input_audio_buffer.speech_stopped")),
+        (0.05, NS(type="conversation.item.input_audio_transcription.completed", transcript="What's new in Ukraine?")),
         (0, NS(type="response.function_call_arguments.done", name="web_search", arguments='{"query": "q"}', call_id="c1")),
         (0, NS(type="response.done", response=None)),
-        (0.05, NS(type="conversation.item.input_audio_transcription.completed", transcript="What's new in Ukraine?")),
     ]
     registry = ToolRegistry()
     registry.register(Tool("web_search", "d", {}, lambda query: {"answer": "news"}))
@@ -208,9 +208,14 @@ def test_tool_flow_adds_language_hint_and_responds():
     asyncio.run(brain._receive(FakeConn(events), session, TokenTotals()))
 
     assert played == [b"tick"]
-    output = json.loads(created[0]["output"])
+    outputs = [c for c in created if c["type"] == "function_call_output"]
+    rules = [c for c in created if c.get("role") == "system"]
+    assert len(outputs) == 1 and len(rules) == 2
+    output = json.loads(outputs[0]["output"])
     assert output["answer"] == "news" and output["reply_language"] == "English"
-    assert responses == [True]
+    # One reply after the transcript, one after the tool; both with the language rule.
+    assert len(responses) == 2
+    assert all("Reply only in English" in r for r in responses)
 
 
 
@@ -561,7 +566,7 @@ def test_memory_recent_history(tmp_path):
 
 def test_memory_in_instructions(tmp_path):
     text = build_instructions(str(tmp_path / "none.md"), memory="Long-term memory:\n[1] Cat is Murka.")
-    assert text.endswith("[1] Cat is Murka.")
+    assert "[1] Cat is Murka.\n\nReminder: reply in the language" in text
     assert "end_session" in text
 
 
@@ -780,3 +785,14 @@ def test_weather_detects_home_from_ip_once():
     assert first["place"] == "Kharkiv, Ukraine" and second["place"] == "Kharkiv, Ukraine"
     assert calls.count(w.IP_LOCATION_URL) == 1
     assert "error" in off
+
+
+def test_detect_language_by_common_words():
+    from voicebot.language import detect_language
+
+    assert detect_language("Как дела?") == "Russian"
+    assert detect_language("Какая погода завтра в Харькове?") == "Russian"
+    assert detect_language("Добре, бувай") == "Ukrainian"
+    assert detect_language("Підкажи, коли буде Пасха") == "Ukrainian"
+    assert detect_language("What's the weather?") == "English"
+    assert detect_language("Зразумела") is None

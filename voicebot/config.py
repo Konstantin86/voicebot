@@ -56,6 +56,10 @@ class Config:
     state_file: str
     memory_dir: str
     weather_home: str
+    wake_word: bool
+    wake_threshold: float
+    wake_phrases: list[str]
+    models_dir: str
     weather_detect_home: bool
     memory_recent_hours: float
     memory_recent_turns: int
@@ -88,6 +92,10 @@ class Config:
             state_file=_env("STATE_FILE", "/var/lib/voicebot/state.json"),
             memory_dir=_env("MEMORY_DIR", "/var/lib/voicebot/memory"),
             weather_home=_env("WEATHER_HOME"),
+            wake_word=_env_bool("WAKE_WORD", True),
+            wake_threshold=float(_env("WAKE_THRESHOLD", "0.4")),
+            wake_phrases=[p.strip().lower() for p in _env("WAKE_PHRASES", "привет джарвис").split(",") if p.strip()],
+            models_dir=_env("MODELS_DIR", "/opt/voicebot/models"),
             weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
             memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
             memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "20")),

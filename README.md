@@ -3,7 +3,8 @@
 Hands-free home voice assistant. Raspberry Pi 5 + Jabra Speak2 40 are the ears and mouth;
 Azure Foundry Voice Live (`gpt-realtime-mini`) is the brain.
 
-- Call button → session starts (rising beep). Speak in English, Ukrainian or Russian.
+- Say "Hey Jarvis" / "Привет, Джарвис" / "Привіт, Джарвіс" (detected locally, offline), or press
+  the call button → session starts (rising beep). You can ask straight after the wake word. Speak in English, Ukrainian or Russian.
 - Hang-up button, or 30 s of silence → session ends (falling beep). Low double beep = error, see logs.
 - Volume buttons change the Jabra volume.
 - Say goodbye in any language ("bye", "пока", "бувай") and the bot hangs up after its reply.
@@ -35,18 +36,19 @@ Set the Pi address once in your shell, for example `export PI=user@192.168.0.10`
    ```
 2. Copy the code from the Mac (also use this for every update):
    ```bash
-   rsync -av --delete --exclude venv --exclude .git --exclude '__pycache__' ./ $PI:/opt/voicebot/
+   rsync -av --delete --exclude venv --exclude models --exclude .git --exclude '__pycache__' ./ $PI:/opt/voicebot/
    ```
-3. On the Pi, run the installer (creates the `voicebot` user, udev rule, venv, service):
+3. On the Pi, download the wake word models (once, about 220 MB): `/opt/voicebot/deploy/fetch_models.sh`
+4. On the Pi, run the installer (creates the `voicebot` user, udev rule, venv, service):
    ```bash
    cd /opt/voicebot && sudo ./deploy/install.sh
    ```
-4. Fill in the Azure endpoint and key (see `docs/AZURE_SETUP.md`):
+5. Fill in the Azure endpoint and key (see `docs/AZURE_SETUP.md`):
    ```bash
    sudoedit /etc/voicebot/voicebot.env
    ```
-5. Edit household info: `/etc/voicebot/context.md`.
-6. Start and watch logs:
+6. Edit household info: `/etc/voicebot/context.md`.
+7. Start and watch logs:
    ```bash
    sudo systemctl restart voicebot && journalctl -u voicebot -f
    ```
