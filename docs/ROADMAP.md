@@ -5,8 +5,13 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 
 ## Phase 1: Make it useful every day
 1. ✅ **Memory across sessions.**
-   - Short-term: the last 12 hours of conversations are loaded into each new session.
-   - Long-term: "remember that…" / "forget…" tools; facts in `/var/lib/voicebot/memory/facts.json`.
+   - Short-term: the last 12 hours of the household's conversations (up to 80 sentences) are loaded into
+     each new session, with who said each sentence.
+   - Facts: "remember that…" / "forget…" tools; kept forever in `/var/lib/voicebot/memory/facts.json`
+     (private per person unless shared).
+   - ✅ Long-term: after each conversation, a short English summary (text-only Azure call, ~$0.001) is
+     embedded on the Pi (multilingual-e5-small) and stored in the local Qdrant (`voicebot_memory`).
+     `search_memory` is called only for questions about the past. Full text kept 30 days.
 2. ✅ **End the call by voice** in any of the three languages ("bye", "that's it", "пока", "бувай").
    The model calls `end_session`; a local goodbye check is the backup.
 3. **Tools that answer real questions:**
@@ -18,8 +23,9 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
    - ✅ LG TV (webOS 6, C1): on (Wake-on-LAN) / off, apps, inputs (PS5), volume, mute, pause/play.
    - ✅ Films from the TV's USB disk by voice ("play Moana"): film list from the disk, matching in three
      languages with near-word matching, asks when several fit; waits for the disk after power-on; hangs up
-     once a film or video starts.
+     once a film or video starts. Films and cartoons go to the disk first, YouTube only when asked.
    - ✅ TV web browser: web search or a website on the TV screen.
+   - ✅ World clock: time and date anywhere, from the Pi's clock (no web search).
    - ✅ YouTube on the TV: video by description, by channel, or the channel's latest
      (YouTube Data API, ~90 searches a day); gets past YouTube's account screen.
    - ✅ OLX.ua: cheapest listings by city or all of Ukraine, price range, listing details and warning signs
@@ -35,9 +41,14 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 5. ✅ **Wake word:** "Hey Jarvis" (openWakeWord) and "Привет/Привіт, Джарвис" (Vosk), all on the Pi CPU
    (about 9% of one core).
    The mic listens locally; nothing goes to Azure until the wake word. The call button stays as backup.
+   - ✅ False wakes: the bot stays quiet when people talk among themselves (ignore_speech), hangs up after
+     two such sentences, and ends after 10 s if nobody talks to it.
 6. 🟡 **Who is speaking:** voiceprints per family member, computed on the Pi (sherpa-onnx + WeSpeaker).
-   - ✅ "Remember my voice" (asks the name, ~10 s of speech), greeting by name, memory per person
-     (own facts and conversations; shared household facts), "forget my voice".
+   - ✅ "Remember my voice" (asks the name, ~10 s of speech), greeting by name, private facts per person,
+     "forget my voice".
+   - ✅ Each sentence judged on its own; long ones checked in two halves, so two voices in one sentence go
+     to nobody; follows speaker changes. A voice is never saved under another person's name.
+   - ⬜ Children's voices are close to each other and to their mother's; watch the scores.
    - ⬜ Per-person language, kids mode, calendar.
 7. ⬜ **Telegram link:** conversation summaries on the phone; change voice, model or budget from the phone;
    send a message from the phone to be read aloud at home (intercom).
@@ -52,6 +63,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
     `gpt-realtime-2.1-mini`, transcription models and turn-detection settings.
     - ✅ The log shows when each reply starts and when its first audio arrives (about 2 s with a tool call),
       and warns when Azure marks a reply as failed.
+    - ✅ Long conversations no longer slow down (1.5 s → 6 s before): only the last 30 conversation items
+      are kept.
 11. 🟡 **Better Ukrainian and Russian:**
     - ✅ Reply language follows the user's last sentence: replies start after the transcript, with a
       per-turn language rule; memory no longer pulls replies into Ukrainian.
@@ -144,3 +157,5 @@ Air raid alerts (B1) → reminders with Telegram (3, B15, B16) → TV sleep time
 - OS: reinstall Ubuntu 26.04 LTS later (see `docs/NEXT_STEPS.md`).
 - Remove the leftover wake word test files in `/tmp` on the Pi.
 - Film list: rebuild with deploy/index_films.sh when films are added (disk on the Pi for a moment).
+- Qdrant (klai_qdrant container) listens on all addresses with no API key; bind it to 127.0.0.1 or add a key.
+- The small model sometimes fills gaps after an empty web search (e.g. a wrong flight route); accepted for now.
