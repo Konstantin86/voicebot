@@ -19,6 +19,7 @@ class Fact:
     id: int
     text: str
     created: str
+    person: str | None = None  # None = shared by the household
 
 
 class Memory:
@@ -56,24 +57,24 @@ class Memory:
         os.chmod(tmp, FILE_MODE)
         os.replace(tmp, self.facts_file)
 
-    def remember(self, text: str) -> dict:
+    def remember(self, text: str, person: str | None = None) -> dict:
         text = " ".join(text.split())[:MAX_FACT_CHARS]
         if not text:
             return {"error": "Empty fact."}
         facts = self.facts()
-        if any(f.text.lower() == text.lower() for f in facts):
+        if any(f.text.lower() == text.lower() and f.person == person for f in facts):
             return {"status": "already remembered"}
         if len(facts) >= self.max_facts:
             return {"error": f"Memory is full ({self.max_facts} facts). Ask the user what to forget."}
-        fact = Fact(id=max((f.id for f in facts), default=0) + 1, text=text, created=_today())
+        fact = Fact(id=max((f.id for f in facts), default=0) + 1, text=text, created=_today(), person=person)
         facts.append(fact)
         try:
             self._save_facts(facts)
         except OSError as e:
             log.warning("memory: cannot save facts: %s", e)
             return {"error": "Could not save."}
-        log.info("memory: remembered [%d] %s", fact.id, text)
-        return {"status": "remembered", "id": fact.id}
+        log.info("memory: remembered [%d] %s%s", fact.id, text, f" (for {person})" if person else "")
+        return {"status": "remembered", "id": fact.id, "for": person or "everyone"}
 
     def forget(self, fact_id: int) -> dict:
         facts = self.facts()
@@ -90,12 +91,13 @@ class Memory:
 
     # Short-term history
 
-    def save_session(self, turns: list[tuple[str, str]]) -> None:
+    def save_session(self, turns: list[tuple[str, str]], person: str | None = None) -> None:
         """Appends one session's turns (role, text). Sessions without user speech are skipped."""
         if not any(role == "user" for role, _ in turns):
             return
         record = {
             "time": time.time(),
+            "person": person,
             "turns": [[role, text[:MAX_TURN_CHARS]] for role, text in turns if text.strip()],
         }
         try:
@@ -106,8 +108,9 @@ class Memory:
         except OSError as e:
             log.warning("memory: cannot save history: %s", e)
 
-    def recent(self, now: float | None = None) -> list[tuple[float, str, str]]:
-        """(session time, role, text) for the last recent_turns turns from the last recent_hours."""
+    def recent(self, now: float | None = None, person: str | None = None) -> list[tuple[float, str, str]]:
+        """(session time, role, text) for the last recent_turns turns from the last recent_hours,
+        of this person's conversations (None = conversations with nobody recognised)."""
         now = now or time.time()
         cutoff = now - self.recent_hours * 3600
         turns: list[tuple[float, str, str]] = []
@@ -124,7 +127,7 @@ class Memory:
                 record = json.loads(line)
             except ValueError:
                 continue
-            if record.get("time", 0) >= cutoff:
+            if record.get("time", 0) >= cutoff and record.get("person") == person:
                 turns.extend((record["time"], role, text) for role, text in record.get("turns", []))
         if len(lines) > 500:
             self._trim_history(lines[-200:])
@@ -142,15 +145,16 @@ class Memory:
 
     # Prompt text
 
-    def prompt_text(self, now: float | None = None) -> str:
+    def prompt_text(self, now: float | None = None, person: str | None = None) -> str:
+        """Memory for the prompt. Without a person: shared facts and unrecognised conversations.
+        With a person: only that person's own facts and conversations."""
         parts = []
-        facts = self.facts()
+        facts = [f for f in self.facts() if f.person == person]
         if facts:
-            parts.append(
-                "Long-term memory (facts the user asked you to remember; id in brackets):\n"
-                + "\n".join(f"[{f.id}] {f.text}" for f in facts)
-            )
-        recent = self.recent(now)
+            title = (f"{person}'s own memory (facts {person} asked you to remember; id in brackets)" if person
+                     else "Long-term memory (shared household facts; id in brackets)")
+            parts.append(title + ":\n" + "\n".join(f"[{f.id}] {f.text}" for f in facts))
+        recent = self.recent(now, person)
         if recent:
             lines, last_session = [], None
             for session_time, role, text in recent:
@@ -160,7 +164,8 @@ class Memory:
                     last_session = session_time
                 lines.append(f"{'User' if role == 'user' else 'You'}: {text}")
             parts.append(
-                "Recent conversations (earlier sessions today; use only if relevant, "
+                (f"Recent conversations with {person} " if person else "Recent conversations ") +
+                "(earlier sessions today; use only if relevant, "
                 "do not bring them up unprompted). Your past replies below may be in the wrong language; "
                 "never copy their language:\n" + "\n".join(lines)
             )

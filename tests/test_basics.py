@@ -543,7 +543,7 @@ def test_memory_facts_remember_forget(tmp_path):
     from voicebot.memory import Memory
 
     m = Memory(str(tmp_path / "mem"))
-    assert m.remember("The cat is called Murka.") == {"status": "remembered", "id": 1}
+    assert m.remember("The cat is called Murka.") == {"status": "remembered", "id": 1, "for": "everyone"}
     assert m.remember("the cat is called murka.")["status"] == "already remembered"
     assert m.remember("Kostya likes jazz.")["id"] == 2
     assert m.forget(1)["status"] == "forgotten"
@@ -1279,3 +1279,102 @@ def test_tv_browse():
     assert opened[0] == ("system.launcher/open",
                          "https://www.google.com/search?q=%D0%BD%D0%BE%D0%B2%D1%96+%D0%BC%D1%83%D0%BB%D1%8C%D1%82%D1%84%D1%96%D0%BB%D1%8C%D0%BC%D0%B8+2026")
     assert opened[1][1] == "https://multiplex.ua"
+
+
+def test_memory_per_person(tmp_path):
+    from voicebot.memory import Memory
+
+    m = Memory(str(tmp_path))
+    m.remember("The cat is called Murka.")
+    m.remember("Kostya likes dark chocolate.", person="Kostya")
+    m.remember("Anna is learning French.", person="Anna")
+    m.save_session([("user", "привет"), ("assistant", "Привет, Костя!")], person="Kostya")
+    m.save_session([("user", "hello"), ("assistant", "Hi!")])
+    shared = m.prompt_text()
+    kostya = m.prompt_text(person="Kostya")
+    assert "Murka" in shared and "chocolate" not in shared and "Привет, Костя" not in shared and "Hi!" in shared
+    assert "chocolate" in kostya and "Murka" not in kostya and "French" not in kostya and "Привет, Костя" in kostya
+
+
+class _FakeVoices:
+    """Stand-in for speakers.Voices: a 'voice' is the first byte of the audio."""
+
+    def __init__(self, profiles=None):
+        import numpy as np
+
+        self.np = np
+        self.profiles = profiles or {}
+        self.threshold, self.margin = 0.6, 0.08
+        self.saved = []
+
+    def names(self):
+        return sorted(self.profiles)
+
+    def embed(self, pcm):
+        v = self.np.zeros(4, dtype=self.np.float32)
+        v[pcm[0] % 4] = 1.0
+        return v
+
+    def identify(self, vector):
+        from voicebot.speakers import Voices
+
+        return Voices.identify(self, vector)
+
+    def scores(self, vector):
+        from voicebot.speakers import Voices
+
+        return Voices.scores(self, vector)
+
+    def enrol(self, name, vector, seconds):
+        self.profiles[name] = {"embedding": list(vector), "seconds": seconds}
+        self.saved.append((name, round(seconds)))
+
+
+def test_voice_session_enrol_and_recognise():
+    import asyncio
+
+    from voicebot.speakers import BYTES_PER_SECOND, VoiceSession
+
+    voices = _FakeVoices()
+    one_second = bytes([1, 0]) * (BYTES_PER_SECOND // 2)
+
+    async def run():
+        session = VoiceSession(voices, lambda person: f"{person}'s own memory: likes tea")
+        await session.add_turn(one_second * 3)
+        first = await session.remember_voice("костя")
+        await session.add_turn(one_second * 4)
+        second = await session.remember_voice("костя")
+        later = VoiceSession(voices, lambda person: f"{person}'s own memory: likes tea")
+        await later.add_turn(one_second * 2)
+        return first, second, later
+
+    first, second, later = asyncio.run(run())
+    assert first["status"] == "need more speech"
+    assert second["status"] == "voice saved" and voices.saved == [("Костя", 7)]
+    assert later.speaker == "Костя"
+    intro = later.introduction()
+    assert "Костя" in intro and "likes tea" in intro and later.introduction() is None
+
+
+def test_voice_session_cuts_sentences_from_recording():
+    from voicebot.speakers import BYTES_PER_SECOND, RECORD_SECONDS, VoiceSession
+
+    session = VoiceSession(_FakeVoices())
+    session.record(b"\x00\x00" * (BYTES_PER_SECOND // 2) * (RECORD_SECONDS + 10))  # 70 s, first 10 s dropped
+    session.record(b"\x07\x00" * (BYTES_PER_SECOND // 2))  # second 70..71
+    cut = session.audio_between(70_000, 71_000)
+    assert len(cut) == BYTES_PER_SECOND and cut[:2] == b"\x07\x00"
+    assert session.audio_between(1_000, 2_000) == b""  # already dropped
+
+
+def test_remember_goes_to_the_speaker(tmp_path):
+    from types import SimpleNamespace
+
+    from voicebot.memory import Memory
+    from voicebot.tools.memory_tools import make_tools
+
+    memory = Memory(str(tmp_path))
+    current = SimpleNamespace(speaker="Kostya")
+    remember = next(t for t in make_tools(memory, current) if t.name == "remember").handler
+    assert remember("Kostya likes tea.")["for"] == "Kostya"
+    assert remember("The Wi-Fi is called KL_Link.", shared=True)["for"] == "everyone"

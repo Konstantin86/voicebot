@@ -53,7 +53,8 @@ class ToolRegistry:
         return list(self._tools)
 
 
-def default_registry(memory=None, weather_home: str = "", weather_detect_home: bool = False) -> ToolRegistry:
+def default_registry(memory=None, weather_home: str = "", weather_detect_home: bool = False,
+                     voices=None, current=None) -> ToolRegistry:
     import os
 
     from . import auto_ria, memory_tools, olx, tv, weather, web_search, youtube
@@ -66,7 +67,10 @@ def default_registry(memory=None, weather_home: str = "", weather_detect_home: b
     if ria_tool:
         registry.register(ria_tool)
     if memory is not None:
-        for tool in memory_tools.make_tools(memory):
+        for tool in memory_tools.make_tools(memory, current):
+            registry.register(tool)
+    if voices is not None and current is not None:
+        for tool in memory_tools.voice_tools(voices, current):
             registry.register(tool)
     tools, tavily_video_finder = web_search.from_env()
     for tool in tools:

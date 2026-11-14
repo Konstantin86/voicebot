@@ -18,5 +18,11 @@ for m in vosk-model-small-ru-0.22; do
   fi
 done
 
+# Voiceprints for "who is speaking" (WeSpeaker ResNet34, 26.5 MB)
+SPEAKER=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models
+mkdir -p "$DIR/speaker"
+f=wespeaker_en_voxceleb_resnet34_LM.onnx
+[[ -s $DIR/speaker/$f ]] || curl -fsSL -o "$DIR/speaker/$f" "$SPEAKER/$f"
+
 chmod -R o-w "$DIR"
 du -sh "$DIR"/* 

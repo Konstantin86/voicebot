@@ -35,8 +35,10 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 5. ✅ **Wake word:** "Hey Jarvis" (openWakeWord) and "Привет/Привіт, Джарвис" (Vosk), all on the Pi CPU
    (about 9% of one core).
    The mic listens locally; nothing goes to Azure until the wake word. The call button stays as backup.
-6. ⬜ **Who is speaking:** voice fingerprints per family member, computed on the Pi.
-   The bot knows who asked: name, calendar, language, kids mode.
+6. 🟡 **Who is speaking:** voiceprints per family member, computed on the Pi (sherpa-onnx + WeSpeaker).
+   - ✅ "Remember my voice" (asks the name, ~10 s of speech), greeting by name, memory per person
+     (own facts and conversations; shared household facts), "forget my voice".
+   - ⬜ Per-person language, kids mode, calendar.
 7. ⬜ **Telegram link:** conversation summaries on the phone; change voice, model or budget from the phone;
    send a message from the phone to be read aloud at home (intercom).
 8. ⬜ **More of the home:** Wi-Fi lights and plugs (a WiZ bulb and an ESP device are already on the

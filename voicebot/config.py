@@ -60,6 +60,10 @@ class Config:
     wake_threshold: float
     wake_phrases: list[str]
     models_dir: str
+    voice_id: bool
+    voice_threshold: float
+    voice_margin: float
+    voices_file: str
     weather_detect_home: bool
     memory_recent_hours: float
     memory_recent_turns: int
@@ -96,6 +100,10 @@ class Config:
             wake_threshold=float(_env("WAKE_THRESHOLD", "0.5")),
             wake_phrases=[p.strip().lower() for p in _env("WAKE_PHRASES", "привет джарвис").split(",") if p.strip()],
             models_dir=_env("MODELS_DIR", "/opt/voicebot/models"),
+            voice_id=_env_bool("VOICE_ID", True),
+            voice_threshold=float(_env("VOICE_THRESHOLD", "0.65")),
+            voice_margin=float(_env("VOICE_MARGIN", "0.08")),
+            voices_file=_env("VOICES_FILE", "/var/lib/voicebot/voices.json"),
             weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
             memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
             memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "20")),

@@ -123,6 +123,21 @@ Cars (most important for car questions):
 """
 
 
+PEOPLE = """\
+People (voice recognition):
+- You can recognise household members by voice. Known voices: {names}.
+- When someone asks you to remember their voice: if you do not know their name, ask it. Then call
+  remember_voice with the name. If it asks for more speech, ask them to say a few sentences about anything,
+  then call it again. Afterwards say you will recognise them from now on.
+- When a system message says who is speaking, use their name naturally (not in every sentence).
+  If nobody is recognised, do not guess names.
+- remember saves to the speaker's own memory; set shared for household facts (home, pets, shared plans).
+- A voice is not proof of identity; never treat it as permission for anything private.
+- You only see the conversations and facts of the person speaking (and shared ones). Never claim to know
+  whether, when or what someone else talked to you about; say you can't see other people's conversations.
+"""
+
+
 LANGUAGE_REMINDER = (
     "Reminder: reply in the language of the user's last utterance (English, Ukrainian or Russian). "
     "A Russian question gets a Russian answer, even in Ukraine and even if earlier replies were Ukrainian."
@@ -130,7 +145,8 @@ LANGUAGE_REMINDER = (
 
 
 def build_instructions(
-    context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = "", cars: bool = False
+    context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = "", cars: bool = False,
+    people: list[str] | None = None,
 ) -> str:
     now = (now or datetime.now()).astimezone()
     parts = [
@@ -148,6 +164,8 @@ def build_instructions(
         log.warning("context file %s not found", context_file)
     except OSError as e:
         log.warning("cannot read context file %s: %s", context_file, e)
+    if people is not None:
+        parts.append(PEOPLE.replace("{names}", ", ".join(people) or "none yet"))
     if memory:
         parts.append(memory)
     parts.append(LANGUAGE_REMINDER)

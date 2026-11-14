@@ -6,7 +6,13 @@ from . import Tool
 END_SESSION = "end_session"
 
 
-def make_tools(memory: Memory) -> list[Tool]:
+def make_tools(memory: Memory, current=None) -> list[Tool]:
+    """current: speakers.Current; facts go to the recognised speaker's own memory unless shared."""
+
+    def remember(fact: str, shared: bool = False) -> dict:
+        person = None if shared or current is None else current.speaker
+        return memory.remember(fact, person)
+
     return [
         Tool(
             name="remember",
@@ -17,10 +23,14 @@ def make_tools(memory: Memory) -> list[Tool]:
             ),
             parameters={
                 "type": "object",
-                "properties": {"fact": {"type": "string", "description": "One short English sentence."}},
+                "properties": {
+                    "fact": {"type": "string", "description": "One short English sentence."},
+                    "shared": {"type": "boolean", "description": "True for facts about the whole household "
+                               "(home, pets, shared plans); false for facts about the person speaking."},
+                },
                 "required": ["fact"],
             },
-            handler=lambda fact: memory.remember(fact),
+            handler=remember,
         ),
         Tool(
             name="forget",
@@ -60,3 +70,46 @@ def end_session_tool() -> Tool:
         parameters={"type": "object", "properties": {}},
         handler=lambda: {"status": "ending"},
     )
+
+
+def voice_tools(voices, current) -> list[Tool]:
+    """remember_voice / forget_voice. voices: speakers.Voices; current: speakers.Current."""
+
+    async def remember_voice(name: str) -> dict:
+        if not current.session:
+            return {"error": "Voice recognition is not running."}
+        return await current.session.remember_voice(name)
+
+    def forget_voice(name: str) -> dict:
+        for known in voices.names():
+            if known.lower() == name.strip().lower():
+                voices.forget(known)
+                return {"status": "voice forgotten", "name": known}
+        return {"error": f"No saved voice called {name!r}.", "known_voices": voices.names()}
+
+    return [
+        Tool(
+            name="remember_voice",
+            description=(
+                "Save the voice of the person speaking so you recognise them later ('remember my voice', "
+                "'запам'ятай мій голос', 'запомни мой голос'). First ask their name if you do not know it. "
+                "Uses what they said in this conversation; it may ask for a few more sentences first."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "The person's name as they said it, e.g. 'Костя'."}},
+                "required": ["name"],
+            },
+            handler=remember_voice,
+        ),
+        Tool(
+            name="forget_voice",
+            description="Delete a saved voice when asked ('forget my voice', 'forget Anna's voice').",
+            parameters={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            handler=forget_voice,
+        ),
+    ]

@@ -24,6 +24,7 @@ TRANSCRIPT_WAIT_SECONDS = 2
 GOODBYE_REPLY_START_SECONDS = 2
 GOODBYE_REPLY_MAX_SECONDS = 15
 REPLY_WITHOUT_TRANSCRIPT_SECONDS = 2.0
+VOICE_WAIT_SECONDS = 1.0
 STALL_SECONDS = 10  # no event from Azure for this long while an answer is due = stalled
 QUIET_EVENTS = ("delta",)  # left out of the event history
 TRANSCRIBE_PHRASES = ["Jarvis", "Джарвис", "Джарвіс", "YouTube", "Netflix", "PS5", "Price Navigator"]
@@ -149,11 +150,15 @@ class VoiceLiveBrain:
             frames = [await s.mic.get()]
             while len(frames) < MIC_FRAMES_PER_MESSAGE and not s.mic.empty():
                 frames.append(s.mic.get_nowait())
-            audio = base64.b64encode(b"".join(frames)).decode("ascii")
+            raw = b"".join(frames)
+            if s.voice_session:
+                s.voice_session.record(raw)
+            audio = base64.b64encode(raw).decode("ascii")
             await conn.input_audio_buffer.append(audio=audio)
 
     async def _receive(self, conn, s: SessionIO, usage: TokenTotals) -> None:
         turn = _Turn()
+        turn.voice = s.voice_session
         background: set[asyncio.Task] = set()
         tool_tasks: list[asyncio.Task] = []
         end_requested = False
@@ -177,10 +182,15 @@ class VoiceLiveBrain:
                     s.speaker.play(event.delta)
                     s.touch()
                 elif kind == E.INPUT_AUDIO_BUFFER_SPEECH_STARTED:
+                    turn.speech_start_ms = getattr(event, "audio_start_ms", None)
                     s.user_speaking = True
                     s.speaker.clear()
                     s.touch()
                 elif kind == E.INPUT_AUDIO_BUFFER_SPEECH_STOPPED:
+                    end_ms = getattr(event, "audio_end_ms", None)
+                    if turn.voice and turn.speech_start_ms is not None and end_ms:
+                        pcm = turn.voice.audio_between(turn.speech_start_ms, end_ms - self.cfg.turn_silence_ms)
+                        turn.voice_task = spawn(turn.voice.add_turn(pcm))
                     s.user_speaking = False
                     turn.transcript_ready.clear()
                     turn.number += 1
@@ -306,12 +316,28 @@ class VoiceLiveBrain:
             return
         turn.awaiting_reply = False
         turn.waiting_for_audio = True
+        await self._introduce_speaker(conn, turn)
         log.info("reply started %.1f s after speech ended, language %s",
                  time.monotonic() - turn.stopped_at, turn.language or "not detected")
         await self._create_response(conn, turn)
         if turn.watchdog:
             turn.watchdog.cancel()
         turn.watchdog = asyncio.create_task(self._watch_reply(conn, turn, turn.number))
+
+    async def _introduce_speaker(self, conn, turn: "_Turn") -> None:
+        """Waits briefly for this sentence's voiceprint; once the speaker is known, tells the model who it is."""
+        if not turn.voice:
+            return
+        if turn.voice_task and not turn.voice_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(turn.voice_task), VOICE_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                log.info("voice: not ready in time for this reply")
+            except Exception:
+                log.exception("voice recognition failed")
+        intro = turn.voice.introduction()
+        if intro:
+            await conn.conversation.item.create(item=SystemMessageItem(content=[InputTextContentPart(text=intro)]))
 
     async def _watch_reply(self, conn, turn: "_Turn", number: int) -> None:
         """If Azure goes quiet while an answer is due, log what it last sent and ask once more."""
@@ -363,6 +389,9 @@ class _Turn:
         self.awaiting_reply = False  # the user's finished turn has no reply yet
         self.stopped_at = 0.0
         self.waiting_for_audio = False
+        self.voice = None  # speakers.VoiceSession
+        self.voice_task: asyncio.Task | None = None
+        self.speech_start_ms: int | None = None
         self.watchdog: asyncio.Task | None = None
         self.tools_running = 0
         self.last_event = time.monotonic()

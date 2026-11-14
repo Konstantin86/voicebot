@@ -17,7 +17,7 @@ from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
 from .voice_preview import VoicePreviews
-from . import wake
+from . import speakers, wake
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,11 @@ class App:
             log.info("weather home: %s (from %s)", weather_home, source)
         else:
             log.info("weather home: not set; %s", "will detect from IP" if cfg.weather_detect_home else "ask the user")
-        self.tools = default_registry(self.memory, weather_home, cfg.weather_detect_home)
+        self.voices = (speakers.build(cfg.models_dir, cfg.voices_file, cfg.voice_threshold, cfg.voice_margin)
+                       if cfg.voice_id else None)
+        self.current_voice = speakers.Current()
+        self.tools = default_registry(self.memory, weather_home, cfg.weather_detect_home,
+                                      self.voices, self.current_voice)
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)
@@ -213,6 +217,12 @@ class App:
                 mic.get_nowait()
             mic.put_nowait(frame)
 
+        voice_session = None
+        if self.voices:
+            voice_session = speakers.VoiceSession(
+                self.voices, lambda person: self.memory.prompt_text(person=person)
+            )
+        self.current_voice.session = voice_session
         session = SessionIO(
             mic=mic,
             speaker=self.audio,
@@ -221,6 +231,7 @@ class App:
                 web_search="web_search" in self.tools.names(),
                 memory=self.memory.prompt_text(),
                 cars="auto_ria" in self.tools.names(),
+                people=self.voices.names() if self.voices else None,
             ),
             tools=self.tools,
             stop=stop,
@@ -228,6 +239,7 @@ class App:
             voice=self.settings.voice,
             greeting=greeting,
             thinking_sound=self.cue["THINKING"],
+            voice_session=voice_session,
         )
         started = time.monotonic()
         log.info("session started%s", " by wake word" if from_wake else "")
@@ -286,7 +298,11 @@ class App:
                 # that would end the new session.
                 self.hook.set_off_hook_light(False)
             await self._play_cue("ERROR" if failed else "END")
-            self.memory.save_session(session.history)
+            speaker = voice_session.speaker if voice_session else None
+            self.memory.save_session(session.history, person=speaker)
+            self.current_voice.session = None
+            if speaker:
+                log.info("session was with %s", speaker)
             log.info("session ended (%s) after %.0f s", reason, time.monotonic() - started)
             if not self._restarting:
                 self._listen_for_wake_word()
