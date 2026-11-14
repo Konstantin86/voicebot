@@ -69,7 +69,8 @@ def site_name(url: str | None) -> str | None:
 
 DESCRIPTION = (
     "Search the web for current or factual information: news, recent events, results, prices, "
-    "schedules, or anything you are not sure about. Returns a short answer and a few snippets."
+    "schedules, or anything you are not sure about. Returns a short answer and a few snippets. "
+    "Not for cars for sale: use auto_ria for those."
 )
 PARAMETERS = {
     "type": "object",

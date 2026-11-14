@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import collections
 import logging
 import time
 from typing import Any
@@ -23,6 +24,8 @@ TRANSCRIPT_WAIT_SECONDS = 2
 GOODBYE_REPLY_START_SECONDS = 2
 GOODBYE_REPLY_MAX_SECONDS = 15
 REPLY_WITHOUT_TRANSCRIPT_SECONDS = 2.0
+STALL_SECONDS = 10  # no event from Azure for this long while an answer is due = stalled
+QUIET_EVENTS = ("delta",)  # left out of the event history
 TRANSCRIBE_PHRASES = ["Jarvis", "Джарвис", "Джарвіс", "YouTube", "Netflix", "PS5", "Price Navigator"]
 
 
@@ -164,6 +167,9 @@ class VoiceLiveBrain:
         try:
             async for event in conn:
                 kind = event.type
+                turn.last_event = time.monotonic()
+                if not str(kind).endswith(QUIET_EVENTS):
+                    turn.events.append((turn.last_event, str(kind)))
                 if kind == E.RESPONSE_AUDIO_DELTA:
                     if turn.waiting_for_audio:
                         turn.waiting_for_audio = False
@@ -239,11 +245,17 @@ class VoiceLiveBrain:
                 elif kind == E.WARNING:
                     log.warning("voice live warning: %s", event.as_dict())
         finally:
+            if turn.watchdog:
+                turn.watchdog.cancel()
             for task in background:
                 task.cancel()
 
     async def _run_tool(self, conn, s: SessionIO, event, turn: "_Turn") -> None:
-        output = await s.tools.call(event.name, event.arguments)
+        turn.tools_running += 1
+        try:
+            output = await s.tools.call(event.name, event.arguments)
+        finally:
+            turn.tools_running -= 1
         # The transcript of the user's question can arrive after the tool call starts.
         try:
             await asyncio.wait_for(turn.transcript_ready.wait(), TRANSCRIPT_WAIT_SECONDS)
@@ -293,6 +305,30 @@ class VoiceLiveBrain:
         log.info("reply started %.1f s after speech ended, language %s",
                  time.monotonic() - turn.stopped_at, turn.language or "not detected")
         await self._create_response(conn, turn)
+        if turn.watchdog:
+            turn.watchdog.cancel()
+        turn.watchdog = asyncio.create_task(self._watch_reply(conn, turn, turn.number))
+
+    async def _watch_reply(self, conn, turn: "_Turn", number: int) -> None:
+        """If Azure goes quiet while an answer is due, log what it last sent and ask once more."""
+        retried = False
+        while turn.number == number and turn.waiting_for_audio:
+            await asyncio.sleep(1)
+            if turn.tools_running or time.monotonic() - turn.last_event < STALL_SECONDS:
+                continue
+            now = time.monotonic()
+            history = ", ".join(f"{kind} ({now - t:.0f} s ago)" for t, kind in list(turn.events)[-8:])
+            log.warning("no answer and no event from Azure for %d s; last events: %s", STALL_SECONDS, history)
+            if retried:
+                return
+            retried = True
+            turn.last_event = time.monotonic()
+            try:
+                await conn.response.cancel()
+            except Exception as e:
+                log.info("cancel before retry: %s", e)
+            await self._create_response(conn, turn)
+            log.info("asked Azure for the answer again")
 
     async def _reply_if_no_transcript(self, conn, turn: "_Turn", number: int) -> None:
         await asyncio.sleep(REPLY_WITHOUT_TRANSCRIPT_SECONDS)
@@ -308,7 +344,11 @@ def _voice_config(name: str) -> dict[str, str]:
 def _language_rule(language: str | None) -> str | None:
     if not language:
         return None
-    return f"The user's last utterance was in {language}. Reply only in {language}, whatever language was used before."
+    return (
+        f"The user's last utterance was in {language}. Reply only in {language}, whatever language was used before. "
+        "Start with the answer itself, without repeating the question or saying \"here's what I found\", "
+        "and do not end with an offer of more help."
+    )
 
 
 class _Turn:
@@ -319,6 +359,10 @@ class _Turn:
         self.awaiting_reply = False  # the user's finished turn has no reply yet
         self.stopped_at = 0.0
         self.waiting_for_audio = False
+        self.watchdog: asyncio.Task | None = None
+        self.tools_running = 0
+        self.last_event = time.monotonic()
+        self.events: collections.deque = collections.deque(maxlen=30)
         self.transcript_ready = asyncio.Event()
         self.transcript_ready.set()
         self.responding = asyncio.Event()

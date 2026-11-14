@@ -20,7 +20,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
      (YouTube Data API, ~90 searches a day); gets past YouTube's account screen.
    - ✅ OLX.ua: cheapest listings by city or all of Ukraine, price range, listing details and warning signs
      (website data feed; filters out accessories, boxes, buy ads and, for parts, whole PCs).
-   - ✅ AUTO.RIA used cars (official API): listings with year, price, mileage, city.
+   - ✅ AUTO.RIA used cars (official API): listings with year, price, mileage, city, seller damage marks
+     and listing checks; "more options", "without accidents"; 30-minute cache and hourly-limit handling.
    - ⬜ Timers, alarms, reminders. Needs the bot to speak unprompted: play a sound, or open a short
      Azure session to say the reminder.
    - ⬜ Calendar (Outlook or Google): "What's on tomorrow?"
@@ -95,6 +96,7 @@ Timers and reminders (3) → morning brief (4) → deployment (12) → more of t
 - ✅ OLX and AUTO.RIA search; MAI Transcribe; better Russian/Ukrainian detection.
 
 ## Still open from earlier
-- Car answers: say only what the listing shows (the bot once claimed a "good technical inspection").
+- Speech style: answer first, no repeated question, no stock "let me know" endings; keep checking by ear.
+- Azure sometimes stalls mid-session; a watchdog now logs Azure's last events and retries once. Watch the logs.
 - OS: reinstall Ubuntu 26.04 LTS later (see `docs/NEXT_STEPS.md`).
 - Remove the leftover wake word test files in `/tmp` on the Pi.

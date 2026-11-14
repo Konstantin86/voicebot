@@ -220,6 +220,7 @@ class App:
                 self.cfg.context_file,
                 web_search="web_search" in self.tools.names(),
                 memory=self.memory.prompt_text(),
+                cars="auto_ria" in self.tools.names(),
             ),
             tools=self.tools,
             stop=stop,

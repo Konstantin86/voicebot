@@ -1048,3 +1048,112 @@ def test_auto_ria_find_id():
     assert find_id("model3", models) == (1, "Model 3")
     assert find_id("Model X Plaid", models) is None
     assert find_id("", models) is None
+
+
+def test_auto_ria_seller_marks():
+    from voicebot.tools.auto_ria import seller_marks
+
+    assert seller_marks({}) is None
+    assert seller_marks({"autoInfoBar": {"damage": False, "custom": False}}) == []
+    assert seller_marks({"autoInfoBar": {"damage": True, "underCredit": True}}) == [
+        "damaged (after an accident)", "on credit"]
+
+
+def test_auto_ria_listing_checks():
+    from voicebot.tools.auto_ria import listing_checks
+
+    ad = {"verifiedByInspectionCenter": True, "technicalChecked": False, "auctionPossible": True,
+          "haveInfotechReport": 1, "dealer": {"id": 5}}
+    assert listing_checks(ad) == ["checked at an inspection centre", "vehicle history report attached",
+                                 "price negotiable", "sold by a dealer"]
+    assert listing_checks({}) == []
+
+
+def test_stalled_reply_is_retried_once(monkeypatch):
+    import asyncio
+    import time
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains import voicelive
+    from voicebot.brains.voicelive import VoiceLiveBrain, _Turn
+
+    monkeypatch.setattr(voicelive, "STALL_SECONDS", 0.5)
+    calls = []
+
+    async def create(**kw):
+        calls.append("create")
+
+    async def cancel(**kw):
+        calls.append("cancel")
+
+    async def item_create(item):
+        calls.append("rule")
+
+    conn = NS(response=NS(create=create, cancel=cancel), conversation=NS(item=NS(create=item_create)))
+    brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+
+    async def run():
+        turn = _Turn()
+        turn.number, turn.waiting_for_audio, turn.last_event = 1, True, time.monotonic() - 5
+        await asyncio.wait_for(brain._watch_reply(conn, turn, 1), 5)
+
+    asyncio.run(run())
+    assert calls == ["cancel", "create"]  # no language detected, so no rule message
+
+
+def test_car_rules_only_with_car_tool(tmp_path):
+    from voicebot.prompt import build_instructions
+
+    ctx = str(tmp_path / "none.md")
+    with_cars = build_instructions(ctx, web_search=True, cars=True)
+    assert "always call auto_ria" in with_cars
+    assert with_cars.index("always call auto_ria") < with_cars.index("For where-to-buy questions")
+    assert "auto_ria" not in build_instructions(ctx, web_search=True)
+
+
+def test_auto_ria_cache_offset_damage_and_limit(monkeypatch):
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from voicebot.tools import auto_ria
+
+    seen, state = [], {"limit": False}
+
+    async def handler(request):
+        path = request.path
+        seen.append(path)
+        if state["limit"] and not path.endswith("/marks"):
+            return web.json_response({"error_type": "HourOverlimit"}, status=429)
+        if path.endswith("/marks"):
+            return web.json_response([{"name": "Tesla", "value": 2233}])
+        if path.endswith("/search"):
+            return web.json_response({"result": {"search_result": {"ids": [str(i) for i in range(1, 11)], "count": 10}}})
+        i = int(request.query["auto_id"])
+        return web.json_response({"USD": 20000 + i, "markName": "Tesla", "modelName": "Model 3",
+                                  "autoData": {"year": 2021}, "autoInfoBar": {"damage": i in (2, 3)}})
+
+    async def run():
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        async with TestServer(app) as server:
+            monkeypatch.setattr(auto_ria, "BASE", str(server.make_url("/auto")))
+            tool = auto_ria.make_tool("K")
+            first = await tool.handler(make="Tesla", no_damage=True)
+            searches_before = sum(p.endswith("/search") for p in seen)
+            again = await tool.handler(make="Tesla", no_damage=True)
+            more = await tool.handler(make="Tesla", no_damage=True, offset=first["next_offset"])
+            searches_after = sum(p.endswith("/search") for p in seen)
+            state["limit"] = True
+            limited = await tool.handler(make="Tesla", year_from=2024)
+            calls_when_blocked = len(seen)
+            blocked = await tool.handler(make="Tesla", year_from=2023)
+            return first, again, more, searches_before, searches_after, limited, blocked, calls_when_blocked
+
+    first, again, more, before, after, limited, blocked, calls = asyncio.run(run())
+    assert [a["price_usd"] for a in first["listings"]] == [20001, 20004, 20005, 20006]  # 2 and 3 damaged
+    assert first["next_offset"] == 6 and again == first and before == after == 1
+    assert [a["price_usd"] for a in more["listings"]] == [20007, 20008, 20009, 20010]
+    assert "hourly" in limited["error"] and "hourly" in blocked["error"]
+    assert len(seen) == calls  # while blocked, no request is sent

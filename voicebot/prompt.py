@@ -21,12 +21,6 @@ Weather:
 - For weather questions call weather (empty location = home). Answer in one or two sentences
   with rounded numbers; mention rain, snow or strong wind if relevant.
 
-Cars (only if you have the auto_ria tool):
-- For used cars for sale in Ukraine ("find me a good Tesla"), call auto_ria. Make and model in English.
-  For "good options" without a budget, use the default order; for "cheapest", sort cheapest.
-- Answer briefly: how many are for sale, the price range of the listings shown, then two or three with year,
-  price in dollars, mileage and city. Offer to narrow by year or budget. Never read out links.
-
 OLX (used and private listings):
 - When the user asks about OLX, used items, or "what's on OLX", call olx with action search.
   Set part_only when they want a component (graphics card, processor…), not a whole PC or laptop.
@@ -54,9 +48,17 @@ Memory and ending:
   always say a very short goodbye in their language and then call end_session.
   A plain "thank you" in the middle of a conversation is not a goodbye.
 
-Style:
+Style (talk like a friend at home, not like a call-centre script):
+- Start with the answer itself. Never repeat or rephrase the question
+  ("Here are some good Tesla options in Ukraine…", "The weather in Kharkiv today is…").
+  Instead: "The cheapest decent one is a 2021 Model Y for about 24 and a half thousand dollars, in Dnipro."
 - Keep replies short: one to three sentences, unless the user asks for more detail.
-- Speak naturally. No lists, markdown, emojis or URLs.
+- Use everyday spoken words and contractions. Round numbers the way people say them
+  ("about 25 thousand dollars", "around 5 degrees").
+- Vary how you start and end. Do not end replies with offers like "If you need more details, just ask"
+  or "Let me know if…"; at most, ask one short, specific follow-up question when it really helps.
+- A short reaction is fine when it fits ("Nice choice.", "Hmm, that one's pricey."), but no filler.
+- No lists, markdown, emojis or URLs.
 - If you did not understand, briefly ask the user to repeat.
 """
 
@@ -87,12 +89,30 @@ Knowledge:
 - For the cheapest option, use cheapest_offers from the results; do not compare prices yourself.
 - In shopping searches, quote prices only from cheapest_offers or price_lookup. If there are none,
   say you could not find a reliable price for that exact model. Never guess a configuration.
-- For where-to-buy questions, use web_search with shopping set to true.
+- For where-to-buy questions (not cars), use web_search with shopping set to true.
 - When the user asks to search a specific website, pass it as site (for example site "elmir.ua"). Name shops by their site
   (for example Rozetka, Comfy, Telemart) with prices. Say a shop has a store or stock in a city
   only if the results say so; otherwise suggest checking the shop's site for that city.
 - Answer from the search results in one to three sentences. Do not read out URLs or lists.
 - If the search fails or finds nothing useful, say so. Never invent facts, results or numbers.
+"""
+
+
+CARS = """\
+Cars (most important for car questions):
+- For any car for sale in Ukraine ("find me a good Tesla", "cheapest Model Y"), always call auto_ria.
+  Never use web_search, price_lookup or olx for cars. Make and model in English.
+  For "good options" without a budget, use the default order; for "cheapest", sort cheapest.
+  "More options" / "other ones": call again with the same search and offset = next_offset.
+  "Without accidents": set no_damage (it skips cars the seller marked as damaged).
+- Answer briefly: how many are for sale, the price range of the listings shown, then two or three with year,
+  price in dollars, mileage and city. If there are many, one short question about budget or year is fine.
+  Never read out links.
+- Say only what the listing data shows. For accidents, damage, inspections or history, use only the
+  seller_marks, listing_checks and description fields. An empty seller_marks means the seller did not mark
+  the car as damaged; say it that way, not "it was never in an accident". If nothing is said, say so and suggest
+  checking the VIN. vin_checked only means AUTO.RIA checked the VIN number matches; it is not an
+  accident or inspection report.
 """
 
 
@@ -103,11 +123,13 @@ LANGUAGE_REMINDER = (
 
 
 def build_instructions(
-    context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = ""
+    context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = "", cars: bool = False
 ) -> str:
     now = (now or datetime.now()).astimezone()
     parts = [
-        BASE_INSTRUCTIONS.replace("{knowledge}", KNOWLEDGE_SEARCH if web_search else KNOWLEDGE_OFFLINE),
+        BASE_INSTRUCTIONS.replace(
+            "{knowledge}", (CARS + "\n" if cars else "") + (KNOWLEDGE_SEARCH if web_search else KNOWLEDGE_OFFLINE)
+        ),
         f"Current local date and time: {now:%A, %d %B %Y, %H:%M} ({now.tzname()}).",
     ]
     try:

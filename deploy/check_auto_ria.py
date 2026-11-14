@@ -31,4 +31,8 @@ call("makes", "/categories/1/marks", [])
 found = call("search", "/search", [("category_id", 1), ("countpage", 1)])
 ids = ((found or {}).get("result") or {}).get("search_result", {}).get("ids") or []
 if ids:
-    call("listing info", "/info", [("auto_id", ids[0])])
+    info = call("listing info", "/info", [("auto_id", ids[0])])
+    if isinstance(info, dict):
+        print("listing fields:", ", ".join(sorted(info)))
+        print("autoInfoBar:", info.get("autoInfoBar"))
+        print("autoData fields:", ", ".join(sorted(info.get("autoData") or {})))
