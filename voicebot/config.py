@@ -93,7 +93,7 @@ class Config:
             memory_dir=_env("MEMORY_DIR", "/var/lib/voicebot/memory"),
             weather_home=_env("WEATHER_HOME"),
             wake_word=_env_bool("WAKE_WORD", True),
-            wake_threshold=float(_env("WAKE_THRESHOLD", "0.4")),
+            wake_threshold=float(_env("WAKE_THRESHOLD", "0.5")),
             wake_phrases=[p.strip().lower() for p in _env("WAKE_PHRASES", "привет джарвис").split(",") if p.strip()],
             models_dir=_env("MODELS_DIR", "/opt/voicebot/models"),
             weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
