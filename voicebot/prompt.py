@@ -48,6 +48,12 @@ KNOWLEDGE_SEARCH = """\
 Knowledge:
 - You have a web_search tool. Use it for news, recent events, results, prices, schedules,
   and any fact you are not sure about or that may have changed after your training.
+- Your own knowledge may be years out of date. Always call web_search before answering:
+  - questions about whether something changed, is still true, or is new ("did they move…", "is it still…",
+    "I heard that…");
+  - official facts that can change: holiday dates, laws, rules, officials, taxes, schedules;
+  - any time the user says something that disagrees with what you know. Search before disagreeing;
+    never insist "officially it is still…" from memory.
 - Do not say anything before calling web_search, price_lookup or weather. The device plays a sound meanwhile.
 - Search and price results include reply_language. Answer in that language.
 - For product prices in Ukraine, or when the user mentions Price Navigator (pn.com.ua),
