@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import subprocess
 import time
@@ -15,6 +16,7 @@ from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
+from .voice_preview import VoicePreviews
 from . import wake
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,13 @@ class App:
         self._dot_timer: asyncio.TimerHandle | None = None
         self._dot_lock = asyncio.Lock()
         self.wake: wake.WakeListener | None = None
+        self.previews: VoicePreviews | None = None
+        if hasattr(self.brain, "say"):
+            self.previews = VoicePreviews(
+                os.path.join(os.path.dirname(cfg.state_file), "voices"),
+                lambda text, voice: self.brain.say(text, voice, cfg.model),
+            )
+        self._background: set[asyncio.Task] = set()
 
     async def run(self, start_now: bool = False) -> None:
         loop = asyncio.get_running_loop()
@@ -84,6 +93,10 @@ class App:
         )
         if start_now:
             self._on_button("toggle")
+        if self.previews:
+            task = asyncio.create_task(self.previews.prepare(self.settings.voices))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
 
         await self._shutdown.wait()
         log.info("shutting down")
@@ -169,7 +182,14 @@ class App:
             else:
                 voice = self.settings.next_voice()
                 log.info("voice switched to %s", voice)
-                self._start_session(greeting=f"Hi, I'm {voice_display_name(voice)}.")
+                clip = None if was_active or not self.previews else await self.previews.get(voice)
+                if clip:
+                    # Between conversations, only let the new voice introduce itself; pressing
+                    # again moves on to the next one.
+                    self.audio.clear()
+                    self.audio.play(clip)
+                else:
+                    self._start_session(greeting=f"Hi, I'm {voice_display_name(voice)}.")
 
     def _change_volume(self, step: int) -> None:
         sign = "+" if step > 0 else "-"

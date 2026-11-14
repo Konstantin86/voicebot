@@ -56,11 +56,15 @@ class ToolRegistry:
 def default_registry(memory=None, weather_home: str = "", weather_detect_home: bool = False) -> ToolRegistry:
     import os
 
-    from . import memory_tools, tv, weather, web_search, youtube
+    from . import auto_ria, memory_tools, olx, tv, weather, web_search, youtube
 
     registry = ToolRegistry()
     registry.register(memory_tools.end_session_tool())
     registry.register(weather.make_tool(weather_home, weather_detect_home))
+    registry.register(olx.make_tool(weather_home))
+    ria_tool = auto_ria.from_env()
+    if ria_tool:
+        registry.register(ria_tool)
     if memory is not None:
         for tool in memory_tools.make_tools(memory):
             registry.register(tool)

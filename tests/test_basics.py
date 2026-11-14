@@ -111,11 +111,12 @@ def test_web_search_tool_registered_only_with_key(monkeypatch):
     from voicebot.tools import default_registry
 
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    assert default_registry().names() == ["end_session", "weather"]
+    monkeypatch.setenv("TV_SETTINGS", "/nonexistent/tv.json")
+    assert default_registry().names() == ["end_session", "weather", "olx"]
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     reg = default_registry()
-    assert reg.names() == ["end_session", "weather", "web_search", "price_lookup"]
-    assert reg.specs()[2]["parameters"]["required"] == ["query"]
+    assert reg.names() == ["end_session", "weather", "olx", "web_search", "price_lookup"]
+    assert reg.specs()[3]["parameters"]["required"] == ["query"]
 
 
 
@@ -205,6 +206,7 @@ def test_tool_flow_adds_language_hint_and_responds():
         model="m", voice="v", thinking_sound=b"tick",
     )
     brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    brain.cfg = __import__("types").SimpleNamespace(transcribe_model="mai-transcribe")
     asyncio.run(brain._receive(FakeConn(events), session, TokenTotals()))
 
     assert played == [b"tick"]
@@ -616,6 +618,7 @@ def test_goodbye_ends_session_without_follow_up():
         model="m", voice="v", thinking_sound=b"tick",
     )
     brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    brain.cfg = __import__("types").SimpleNamespace(transcribe_model="mai-transcribe")
     asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
     assert session.end_ready is True
     assert responses == []
@@ -721,6 +724,7 @@ def test_goodbye_in_transcript_ends_after_reply():
     session = SessionIO(mic=None, speaker=speaker, instructions="", tools=ToolRegistry(), stop=asyncio.Event(),
                         model="m", voice="v")
     brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    brain.cfg = __import__("types").SimpleNamespace(transcribe_model="mai-transcribe")
     asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
     assert session.end_ready is True
 
@@ -796,6 +800,11 @@ def test_detect_language_by_common_words():
     assert detect_language("Підкажи, коли буде Пасха") == "Ukrainian"
     assert detect_language("What's the weather?") == "English"
     assert detect_language("Зразумела") is None
+    assert detect_language("А, давай поговорим на русском.") == "Russian"
+    assert detect_language("Добре, бувай") == "Ukrainian"
+    assert detect_language("Давай") is None
+    assert detect_language("Все, все, поняв, поняв. До побачення.") == "Ukrainian"
+    assert detect_language("А те ще наша церква кудись там перейшла.") == "Ukrainian"
 
 
 def test_tv_find_by_name():
@@ -869,3 +878,173 @@ def test_youtube_quota():
 
     quota = Quota(limit=250)
     assert quota.take(100) and quota.take(100) and not quota.take(100)
+
+
+def test_transcription_settings():
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains.voicelive import VoiceLiveBrain
+
+    def session_for(model):
+        cfg = NS(turn_detection="azure_semantic_vad_multilingual", turn_silence_ms=800, transcribe_model=model,
+                 noise_reduction="", echo_cancellation=False)
+        brain = VoiceLiveBrain(cfg)
+        s = NS(instructions="", voice="coral", speaker=NS(mic_rate=16000), tools=None)
+        return brain._session_config(s)
+
+    mai = session_for("mai-transcribe")
+    assert "Jarvis" in mai["input_audio_transcription"]["phrase_list"]
+    assert "prompt" not in mai["input_audio_transcription"]
+    assert mai["turn_detection"]["create_response"] is False
+    gpt = session_for("gpt-4o-mini-transcribe")
+    assert "Belarusian" in gpt["input_audio_transcription"]["prompt"]
+    off = session_for("")
+    assert "input_audio_transcription" not in off and off["turn_detection"]["create_response"] is True
+
+
+def test_voice_previews_made_once_and_cached(tmp_path):
+    import asyncio
+
+    from voicebot.voice_preview import VoicePreviews
+
+    said = []
+
+    async def say(text, voice):
+        said.append((text, voice))
+        return b"\x01\x02" * 10
+
+    previews = VoicePreviews(str(tmp_path / "voices"), say)
+    assert asyncio.run(previews.get("marin")) == b"\x01\x02" * 10
+    assert asyncio.run(previews.get("marin")) == b"\x01\x02" * 10
+    asyncio.run(previews.prepare(["marin", "en-US-Ava:DragonHDLatestNeural"]))
+    assert said == [("Hi, I'm Marin.", "marin"), ("Hi, I'm Ava.", "en-US-Ava:DragonHDLatestNeural")]
+
+
+def test_voice_preview_failure_returns_none(tmp_path):
+    import asyncio
+
+    from voicebot.voice_preview import VoicePreviews
+
+    async def say(text, voice):
+        raise RuntimeError("offline")
+
+    assert asyncio.run(VoicePreviews(str(tmp_path), say).get("cedar")) is None
+
+
+def _olx_offer(oid, title, price, state="used", city="Харків", offer_type="offer", cat="electronics", cat_id=458):
+    return {"id": oid, "title": title, "offer_type": offer_type, "category": {"type": cat, "id": cat_id},
+            "created_time": "2026-11-01T10:00:00+02:00", "business": False,
+            "location": {"city": {"name": city}},
+            "params": [{"key": "price", "value": {"value": price, "currency": "UAH", "negotiable": True}},
+                       {"key": "state", "value": {"key": state}}]}
+
+
+def test_olx_pick_offers():
+    from voicebot.tools.olx import city_id, pick_offers, summarize
+
+    offers = [
+        _olx_offer(1, "RTX 5070 Ti ROG Strix", 80000),
+        _olx_offer(2, "Відеокарта Gigabyte RTX 5070 12GB", 31000),
+        _olx_offer(3, "ПК Ryzen 5 / RTX 5070", 69999, cat_id=78),
+        _olx_offer(8, "Продам коробку від RTX 5070", 300),
+        _olx_offer(4, "Куплю RTX 5070", 20000, offer_type="buy"),
+        _olx_offer(5, "Ремонт RTX 5070", 500, cat="services"),
+        _olx_offer(6, "RTX 4070 Super", 25000),
+        _olx_offer(7, "RTX 5070 MSI", 33000, state="new", city="Київ"),
+    ]
+    picked = pick_offers(offers, "RTX 5070", 280, "", None, None, "any")
+    assert [o["id"] for o in picked] == [2, 7, 3]
+    assert [o["id"] for o in pick_offers(offers, "RTX 5070", None, "Київ", None, None, "any")] == [7]
+    assert [o["id"] for o in pick_offers(offers, "RTX 5070", 280, "", 32000, 70000, "used")] == [3]
+    assert [o["id"] for o in pick_offers(offers, "RTX 5070 Ti", 280, "", None, None, "any")] == [1]
+    assert [o["id"] for o in pick_offers(offers, "RTX 5070", 280, "", None, None, "any", part_only=True)] == [2, 7]
+    assert summarize(offers[1])["price_uah"] == 31000
+    assert city_id("Kharkiv") == 280 and city_id("харькове") == 280 and city_id("Bucha") is None
+
+
+def test_olx_clean_text():
+    from voicebot.tools.olx import clean_text
+
+    assert clean_text("Стан<br />\n<br />відмінний &amp; коробка") == "Стан відмінний & коробка"
+
+
+def test_olx_drops_accessories():
+    from voicebot.tools.olx import drop_accessories
+
+    offers = [_olx_offer(i, "Дитячий велосипед", p) for i, p in enumerate([100, 150, 1800, 2200, 2500, 3000])]
+    assert [o["id"] for o in drop_accessories(offers)] == [2, 3, 4, 5]
+    assert len(drop_accessories(offers[:3])) == 3
+
+
+def test_olx_accessories_and_variants():
+    from voicebot.tools.olx import pick_offers
+
+    offers = [
+        _olx_offer(1, "Чохол iPhone 15 Pro MagSafe", 250),
+        _olx_offer(2, "iPhone 15 Pro 128GB", 30000),
+        _olx_offer(3, "iPhone 15 Pro Max 256GB", 38000),
+    ]
+    assert [o["id"] for o in pick_offers(offers, "iPhone 15 Pro", 280, "", None, None, "any")] == [2]
+    assert [o["id"] for o in pick_offers(offers, "чохол iPhone 15 Pro", 280, "", None, None, "any")] == [1, 2]
+    assert [o["id"] for o in pick_offers(offers, "iPhone 15 Pro Max", 280, "", None, None, "any")] == [3]
+
+
+def test_auto_ria_search(monkeypatch):
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from voicebot.tools import auto_ria
+
+    seen = []
+
+    async def handler(request):
+        seen.append((request.path, list(request.query.items())))
+        assert request.query["api_key"] == "K"
+        path = request.path
+        if path.endswith("/marks"):
+            return web.json_response([{"name": "Tata", "value": 1}, {"name": "Tesla", "value": 2233}])
+        if path.endswith("/models"):
+            return web.json_response([{"name": "Model S", "value": 10}, {"name": "Model 3", "value": 11}])
+        if path.endswith("/search"):
+            return web.json_response({"result": {"search_result": {"ids": ["5", "6"], "count": 42}}})
+        if path.endswith("/info"):
+            i = int(request.query["auto_id"])
+            return web.json_response({"USD": 20000 + i, "markName": "Tesla", "modelName": "Model 3",
+                                      "autoData": {"year": 2021, "raceInt": 55, "fuelName": "Електро"},
+                                      "stateData": {"name": "Київ"}, "addDate": "2026-11-10 12:00:00"})
+        if path.endswith("/average_price"):
+            return web.json_response({"total": 120, "interQuartileMean": 21500.4})
+        return web.json_response({}, status=404)
+
+    async def run():
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        async with TestServer(app) as server:
+            monkeypatch.setattr(auto_ria, "BASE", str(server.make_url("/auto")))
+            tool = auto_ria.make_tool("K")
+            out = await tool.handler(make="tesla", model="model 3", year_from=2020, sort="cheapest")
+            again = await tool.handler(make="Tesla", model="Model S")
+            return out, again
+
+    out, again = asyncio.run(run())
+    assert out["search"] == "Tesla Model 3" and out["matching_listings"] == 42
+    assert out["price_range_usd_of_shown"] == [20005, 20006]
+    assert not any(p.endswith("/average_price") for p, _ in seen)  # only 30 requests on the free plan
+    assert [a["price_usd"] for a in out["listings"]] == [20005, 20006]
+    assert out["listings"][0]["mileage_km"] == 55000 and out["listings"][0]["city"] == "Київ"
+    search_query = dict(next(q for p, q in seen if p.endswith("/search")))
+    assert search_query["marka_id"] == "2233" and search_query["model_id"] == "11"
+    assert search_query["order_by"] == "1" and search_query["s_yers"] == "2020"
+    assert sum(p.endswith("/marks") for p, _ in seen) == 1  # makes are looked up once
+    assert again["search"] == "Tesla Model S"
+
+
+def test_auto_ria_find_id():
+    from voicebot.tools.auto_ria import find_id
+
+    models = [{"name": "Model 3", "value": 1}, {"name": "Model S", "value": 2}, {"name": "Model X", "value": 3}]
+    assert find_id("model3", models) == (1, "Model 3")
+    assert find_id("Model X Plaid", models) is None
+    assert find_id("", models) is None

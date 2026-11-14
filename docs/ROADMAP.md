@@ -18,6 +18,9 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
    - ✅ LG TV (webOS 6, C1): on (Wake-on-LAN) / off, apps, inputs (PS5), volume, mute, pause/play.
    - ✅ YouTube on the TV: video by description, by channel, or the channel's latest
      (YouTube Data API, ~90 searches a day); gets past YouTube's account screen.
+   - ✅ OLX.ua: cheapest listings by city or all of Ukraine, price range, listing details and warning signs
+     (website data feed; filters out accessories, boxes, buy ads and, for parts, whole PCs).
+   - ✅ AUTO.RIA used cars (official API): listings with year, price, mileage, city.
    - ⬜ Timers, alarms, reminders. Needs the bot to speak unprompted: play a sound, or open a short
      Azure session to say the reminder.
    - ⬜ Calendar (Outlook or Google): "What's on tomorrow?"
@@ -40,11 +43,13 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 10. 🟡 **Measure latency and quality:** time from end of speech to first answer audio, how often the user
     interrupts, wrong-language rate. Use the numbers to compare `gpt-realtime-mini`, `gpt-realtime`,
     `gpt-realtime-2.1-mini`, transcription models and turn-detection settings.
-    - ✅ The log shows when each reply starts after speech ends (0.5–0.8 s today).
+    - ✅ The log shows when each reply starts and when its first audio arrives (about 2 s with a tool call),
+      and warns when Azure marks a reply as failed.
 11. 🟡 **Better Ukrainian and Russian:**
     - ✅ Reply language follows the user's last sentence: replies start after the transcript, with a
       per-turn language rule; memory no longer pulls replies into Ukrainian.
-    - ⬜ Speech is sometimes transcribed as Belarusian ("Падкажы", "Вышав").
+    - ✅ No more Belarusian transcripts: MAI Transcribe (no Belarusian) replaces gpt-4o-mini-transcribe;
+      transcripts also arrive faster (replies 0.1–0.4 s after speech).
     - ⬜ Try Azure multilingual / HD voices and `mai-transcribe`; compare by ear.
 12. ⬜ **Deployment you can trust:**
     - `make deploy`: copy code, restart, check it started (sudo rule limited to that one restart).
@@ -69,7 +74,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
     and an optional physical mute switch.
 
 ## Suggested order
-Timers and reminders (3) → Belarusian transcription fix (11) → morning brief (4) → deployment (12).
+Timers and reminders (3) → morning brief (4) → deployment (12) → more of the home (8).
 
 ## Done so far
 - ✅ Version 1: call/hang-up, Voice Live conversation, barge-in, 30 s silence timeout,
@@ -86,6 +91,10 @@ Timers and reminders (3) → Belarusian transcription fix (11) → morning brief
 - ✅ LG TV control (webOS): on/off (Wake-on-LAN), apps, inputs, volume, pause/play; YouTube videos by
   search, channel or "latest" (YouTube Data API), passing YouTube's account screen.
 
+- ✅ Dot button between conversations: plays the next voice saying its name, no session started.
+- ✅ OLX and AUTO.RIA search; MAI Transcribe; better Russian/Ukrainian detection.
+
 ## Still open from earlier
+- Car answers: say only what the listing shows (the bot once claimed a "good technical inspection").
 - OS: reinstall Ubuntu 26.04 LTS later (see `docs/NEXT_STEPS.md`).
 - Remove the leftover wake word test files in `/tmp` on the Pi.

@@ -23,6 +23,7 @@ TRANSCRIPT_WAIT_SECONDS = 2
 GOODBYE_REPLY_START_SECONDS = 2
 GOODBYE_REPLY_MAX_SECONDS = 15
 REPLY_WITHOUT_TRANSCRIPT_SECONDS = 2.0
+TRANSCRIBE_PHRASES = ["Jarvis", "Джарвис", "Джарвіс", "YouTube", "Netflix", "PS5", "Price Navigator"]
 
 
 def tool_output_item(call_id: str, output: str) -> FunctionCallOutputItem:
@@ -71,18 +72,46 @@ class VoiceLiveBrain:
             for task in done:
                 task.result()
 
+    async def say(self, text: str, voice: str, model: str, timeout: float = 15) -> bytes:
+        """Speaks one phrase in the given voice and returns the PCM16 audio (used for voice previews)."""
+        kwargs: dict[str, Any] = {}
+        if self.cfg.api_version:
+            kwargs["api_version"] = self.cfg.api_version
+        audio = bytearray()
+
+        async def run() -> None:
+            async with connect(
+                endpoint=self.cfg.endpoint, credential=AzureKeyCredential(self.cfg.api_key), model=model, **kwargs
+            ) as conn:
+                await conn.session.update(session={
+                    "modalities": ["text", "audio"],
+                    "voice": _voice_config(voice),
+                    "output_audio_format": "pcm16",
+                    "turn_detection": None,
+                })
+                await conn.response.create(
+                    response={"instructions": f"Say exactly this, warmly and naturally, and nothing else: {text}"}
+                )
+                async for event in conn:
+                    if event.type == E.RESPONSE_AUDIO_DELTA:
+                        audio.extend(event.delta)
+                    elif event.type == E.RESPONSE_DONE:
+                        return
+                    elif event.type == E.ERROR:
+                        raise RuntimeError(event.error.message)
+
+        await asyncio.wait_for(run(), timeout)
+        return bytes(audio)
+
     def _session_config(self, s: SessionIO) -> dict[str, Any]:
         cfg = self.cfg
-        if "Neural" in s.voice:
-            voice = {"type": "azure-standard", "name": s.voice}
-        else:
-            voice = {"type": "openai", "name": s.voice}
+        voice = _voice_config(s.voice)
         turn_detection: dict[str, Any] = {
             "type": cfg.turn_detection,
             "interrupt_response": True,
             "silence_duration_ms": cfg.turn_silence_ms,
-            # Replies are started by us once the transcript is in, so the reply language can be set.
-            "create_response": False,
+            # With a transcript, we start each reply ourselves so the reply language can be set.
+            "create_response": not cfg.transcribe_model,
         }
         if cfg.turn_detection != "server_vad":
             turn_detection["auto_truncate"] = True
@@ -96,10 +125,13 @@ class VoiceLiveBrain:
             "turn_detection": turn_detection,
         }
         if cfg.transcribe_model:
-            session["input_audio_transcription"] = {
-                "model": cfg.transcribe_model,
-                "prompt": "Speech is in English, Ukrainian or Russian. Never Belarusian.",
-            }
+            transcription: dict[str, Any] = {"model": cfg.transcribe_model}
+            if cfg.transcribe_model.startswith("mai-transcribe"):
+                # MAI Transcribe has no Belarusian, so it cannot mistake Ukrainian or Russian for it.
+                transcription["phrase_list"] = TRANSCRIBE_PHRASES
+            else:
+                transcription["prompt"] = "Speech is in English, Ukrainian or Russian. Never Belarusian."
+            session["input_audio_transcription"] = transcription
         if cfg.noise_reduction:
             session["input_audio_noise_reduction"] = {"type": cfg.noise_reduction}
         if cfg.echo_cancellation:
@@ -133,6 +165,9 @@ class VoiceLiveBrain:
             async for event in conn:
                 kind = event.type
                 if kind == E.RESPONSE_AUDIO_DELTA:
+                    if turn.waiting_for_audio:
+                        turn.waiting_for_audio = False
+                        log.info("first answer audio %.1f s after speech ended", time.monotonic() - turn.stopped_at)
                     s.speaker.play(event.delta)
                     s.touch()
                 elif kind == E.INPUT_AUDIO_BUFFER_SPEECH_STARTED:
@@ -143,9 +178,10 @@ class VoiceLiveBrain:
                     s.user_speaking = False
                     turn.transcript_ready.clear()
                     turn.number += 1
-                    turn.awaiting_reply = True
                     turn.stopped_at = time.monotonic()
-                    spawn(self._reply_if_no_transcript(conn, turn, turn.number))
+                    if self.cfg.transcribe_model:
+                        turn.awaiting_reply = True
+                        spawn(self._reply_if_no_transcript(conn, turn, turn.number))
                     s.touch()
                 elif kind == E.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED:
                     turn.user_text = event.transcript.strip()
@@ -184,6 +220,10 @@ class VoiceLiveBrain:
                     turn.responding.clear()
                     turn.response_finished.set()
                     s.touch()
+                    status = getattr(event.response, "status", None)
+                    if status and status != "completed":
+                        details = getattr(event.response, "status_details", None)
+                        log.warning("response %s: %s", status, details.as_dict() if hasattr(details, "as_dict") else details)
                     if event.response and event.response.usage:
                         usage.add_usage(event.response.usage)
                     if end_requested:
@@ -192,7 +232,8 @@ class VoiceLiveBrain:
                         spawn(self._respond_after(conn, turn, tool_tasks))
                         tool_tasks = []
                 elif kind == E.SESSION_UPDATED:
-                    log.info("voice live session ready (model %s, voice %s)", s.model, s.voice)
+                    log.info("voice live session ready (model %s, voice %s, transcription %s)",
+                             s.model, s.voice, self.cfg.transcribe_model or "off")
                 elif kind == E.ERROR:
                     log.error("voice live error %s: %s", event.error.code, event.error.message)
                 elif kind == E.WARNING:
@@ -248,6 +289,7 @@ class VoiceLiveBrain:
         if not turn.awaiting_reply:
             return
         turn.awaiting_reply = False
+        turn.waiting_for_audio = True
         log.info("reply started %.1f s after speech ended, language %s",
                  time.monotonic() - turn.stopped_at, turn.language or "not detected")
         await self._create_response(conn, turn)
@@ -257,6 +299,10 @@ class VoiceLiveBrain:
         if turn.number == number and turn.awaiting_reply and not turn.transcript_ready.is_set():
             log.warning("no transcript in %.0f s; replying without it", REPLY_WITHOUT_TRANSCRIPT_SECONDS)
             await self._reply(conn, turn)
+
+
+def _voice_config(name: str) -> dict[str, str]:
+    return {"type": "azure-standard" if "Neural" in name else "openai", "name": name}
 
 
 def _language_rule(language: str | None) -> str | None:
@@ -272,6 +318,7 @@ class _Turn:
         self.number = 0  # counts the user's finished turns
         self.awaiting_reply = False  # the user's finished turn has no reply yet
         self.stopped_at = 0.0
+        self.waiting_for_audio = False
         self.transcript_ready = asyncio.Event()
         self.transcript_ready.set()
         self.responding = asyncio.Event()

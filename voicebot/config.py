@@ -77,7 +77,7 @@ class Config:
             voices=[v.strip() for v in _env("VOICES", "marin,cedar,coral,ash,sage").split(",") if v.strip()],
             turn_detection=_env("TURN_DETECTION", "azure_semantic_vad_multilingual"),
             turn_silence_ms=int(_env("TURN_SILENCE_MS", "800")),
-            transcribe_model=_env("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+            transcribe_model=_env("TRANSCRIBE_MODEL", "mai-transcribe"),
             noise_reduction=_env("NOISE_REDUCTION"),
             echo_cancellation=_env_bool("ECHO_CANCELLATION", False),
             audio_device=_env("AUDIO_DEVICE", "plughw:CARD=UC,DEV=0"),

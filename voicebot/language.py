@@ -6,6 +6,8 @@ import re
 UKRAINIAN_ONLY = set("іїєґ")
 RUSSIAN_ONLY = set("ыэъё")
 
+LONG_ENOUGH_FOR_RUSSIAN = 15  # letters
+
 # Common words that exist in only one of the two languages (spelled without the letters above).
 RUSSIAN_WORDS = {
     "как", "что", "это", "какая", "какой", "какое", "какие", "где", "когда", "почему", "сколько",
@@ -17,6 +19,7 @@ UKRAINIAN_WORDS = {
     "як", "що", "це", "яка", "який", "яке", "де", "коли", "скільки", "буде", "теж", "дякую", "добре",
     "будь", "ласка", "ні", "мені", "мене", "бувай", "гаразд", "можна", "треба",
     "розкажи", "підкажи", "чи", "або", "якщо", "тільки", "дуже", "зараз", "вона", "вони",
+    "побачення", "поняв", "зрозумів", "зрозуміло", "ось", "нема", "немає", "вже", "ще", "щось", "кудись", "десь", "також",
 }
 
 
@@ -35,6 +38,9 @@ def detect_language(text: str) -> str | None:
     if uk > ru:
         return "Ukrainian"
     if ru > uk:
+        return "Russian"
+    if not uk and cyrillic >= LONG_ENOUGH_FOR_RUSSIAN:
+        # A Ukrainian sentence this long almost always has і, ї, є or ґ.
         return "Russian"
     return None
 
