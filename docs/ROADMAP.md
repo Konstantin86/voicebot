@@ -83,8 +83,42 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 16. ⬜ **Enclosure:** a box or toy with the Jabra's top uncovered, a status LED,
     and an optional physical mute switch.
 
+## Backlog: new ideas
+Status ⬜ unless marked. Numbers are for reference, not order.
+
+### Living in Ukraine
+- B1. ⬜ **Air raid alerts** (alerts.in.ua API, free token): announce start and end for Kharkiv region,
+  answer "is there an alert now?", pause the TV when an alert starts.
+- B2. ⬜ **Power outage schedule:** "when is the power off today?", a warning 15 minutes before an outage.
+- B3. ⬜ **Exchange rates:** National Bank of Ukraine and bank rates by voice.
+
+### The TV as the bot's screen
+- B4. ⬜ **Cards on the TV:** the Pi serves small web pages (weather, timer countdown, shopping list,
+  car comparison) and opens them in the TV browser.
+- B5. ⬜ **Continue watching:** remember each person's last episode; "next episode" just works.
+- B6. ⬜ **Sleep timer:** "turn off the TV in 30 minutes"; for kids, "cartoons for 40 minutes, then off".
+- B7. ⬜ **Film night:** suggest films from the disk based on who is in the room and what they watched.
+
+### Family and kids
+- B8. ⬜ **Bedtime stories:** a new short story each night, in the child's language, with their name and toys.
+- B9. ⬜ **Family quiz:** questions by voice, scoreboard on the TV, answers counted per person by voice.
+- B10. ⬜ **Kids mode:** when a child is recognised: simpler answers, safe searches, TV time limit.
+- B11. ⬜ **Language buddy:** English conversation practice with gentle corrections at the person's level.
+
+### Around the house
+- B12. ⬜ **Lights:** the WiZ bulb on the local network; "movie mode" dims the lights when a film starts.
+- B13. ⬜ **Cooking mode:** step-by-step recipes hands-free, "next step", built-in timers.
+- B14. ⬜ **Shared shopping list:** "add milk" by voice; read it in Telegram at the shop.
+
+### Reminders and Telegram, bigger
+- B15. ⬜ **Reminders for a person:** "remind Alina at 6 to call her mom"; said aloud when she is near,
+  or sent to her Telegram.
+- B16. ⬜ **Telegram:** intercom (type on the phone, the bot reads it at home), daily cost and usage
+  report, ask the bot from outside with the same memory.
+
 ## Suggested order
-Timers and reminders (3) → morning brief (4) → deployment (12) → more of the home (8).
+Air raid alerts (B1) → reminders with Telegram (3, B15, B16) → TV sleep timer and continue watching (B5, B6)
+→ morning brief (4) → deployment (12).
 
 ## Done so far
 - ✅ Version 1: call/hang-up, Voice Live conversation, barge-in, 30 s silence timeout,
