@@ -37,7 +37,8 @@ ACTIONS = ["on", "off", "open_app", "input", "volume_up", "volume_down", "set_vo
 DESCRIPTION = (
     "Control the living room LG TV: turn on/off, open an app (YouTube, Netflix…), switch input "
     "(e.g. PS5, HDMI 2), volume, mute, pause/play, play a YouTube video found by a search query, "
-    "play a film or series episode from the disk attached to the TV (play_film), "
+    "play a film, cartoon or series episode from the hard disk attached to the TV, through its media player "
+    "(play_film; 'с диска', 'на диске', 'з диска', 'медиаплеер' all mean this), "
     "or open the TV's web browser with a web search or a website (browse)."
 )
 PARAMETERS = {
@@ -45,7 +46,8 @@ PARAMETERS = {
     "properties": {
         "action": {"type": "string", "enum": ACTIONS},
         "app": {"type": "string", "description": "App name for open_app, in English as shown on the TV, e.g. 'YouTube', 'Netflix' (also when the user says 'Ютуб')."},
-        "input": {"type": "string", "description": "Input for input, in English, e.g. 'PS5', 'HDMI 2'."},
+        "input": {"type": "string", "description": "Input for input, in English, e.g. 'PS5', 'HDMI 2'. Only when the user names an input or device; "
+                  "never for the disk (that is play_film)."},
         "level": {"type": "integer", "description": "Volume 0-100 for set_volume."},
         "steps": {"type": "integer", "description": "Steps for volume_up / volume_down (default 3)."},
         "query": {"type": "string", "description": "For youtube: what the video is about or its title, e.g. 'Peppa Pig camping'. Can be empty when channel is set."},

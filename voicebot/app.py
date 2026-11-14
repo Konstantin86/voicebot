@@ -11,18 +11,20 @@ from .audio import AudioIO
 from .brains import SessionIO, create_brain
 from .config import Config
 from .jabra import HookButtons, MediaKeys
-from .memory import Memory
+from .memory import Memory, with_people
 from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
 from .voice_preview import VoicePreviews
-from . import speakers, wake
+from . import archive, speakers, wake
 
 log = logging.getLogger(__name__)
 
 MIC_QUEUE_FRAMES = 400  # 8 s: holds what is said right after the wake word while connecting
 PLAYBACK_TAIL = 0.25
+MIN_SENTENCES_TO_SUMMARISE = 2
+MIN_CHARS_TO_SUMMARISE = 60
 DOUBLE_PRESS_SECONDS = 0.4
 CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING")
 
@@ -46,6 +48,9 @@ class App:
         self.current_voice = speakers.Current()
         self.tools = default_registry(self.memory, weather_home, cfg.weather_detect_home,
                                       self.voices, self.current_voice)
+        self.archive = archive.build(cfg.models_dir, cfg.memory_dir, cfg.qdrant_url, cfg.qdrant_api_key)
+        if self.archive:
+            self.tools.register(archive.search_tool(self.archive))
         self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)
@@ -65,6 +70,33 @@ class App:
                 lambda text, voice: self.brain.say(text, voice, cfg.model),
             )
         self._background: set[asyncio.Task] = set()
+
+    def _summarise_later(self, history: list[tuple[str, str]], people: dict[int, str]) -> None:
+        """After a conversation, a short summary goes to the searchable long-term memory (in the background)."""
+        if not self.archive or not hasattr(self.brain, "summarize"):
+            return
+        rows = with_people(history, people)
+        said = [text for role, text, _ in rows if role == "user"]
+        if len(said) < MIN_SENTENCES_TO_SUMMARISE or sum(len(t) for t in said) < MIN_CHARS_TO_SUMMARISE:
+            return
+        when = time.time()
+        transcript = archive.transcript_text(rows)
+        names = sorted({who for _, _, who in rows if who})
+
+        async def run() -> None:
+            try:
+                summary = await self.brain.summarize(archive.SUMMARY_INSTRUCTIONS, archive.summary_request(transcript),
+                                                     self.cfg.model)
+                if not summary or summary.strip().upper().startswith("NOTHING"):
+                    log.info("archive: nothing worth remembering in that conversation")
+                    return
+                await asyncio.to_thread(self.archive.add, when, names, summary, transcript)
+            except Exception as e:
+                log.warning("archive: could not save a summary: %s", e)
+
+        task = asyncio.create_task(run())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def run(self, start_now: bool = False) -> None:
         loop = asyncio.get_running_loop()
@@ -232,6 +264,7 @@ class App:
                 memory=self.memory.prompt_text(),
                 cars="auto_ria" in self.tools.names(),
                 people=self.voices.names() if self.voices else None,
+                past=self.archive is not None,
             ),
             tools=self.tools,
             stop=stop,
@@ -267,12 +300,15 @@ class App:
                     break
                 if session.end_ready and not self.audio.is_playing():
                     await asyncio.sleep(PLAYBACK_TAIL)
-                    reason = "goodbye"
+                    reason = "goodbye" if session.ignored_in_row < 2 else "not addressed"
                     break
                 if brain_task.done():
                     reason = "connection closed"
                     break
-                if session.idle_seconds() > self.cfg.idle_timeout:
+                limit = self.cfg.idle_timeout
+                if from_wake and not session.engaged:
+                    limit = self.cfg.wake_idle_timeout  # likely a false wake: nobody is talking to the bot
+                if session.idle_seconds() > limit:
                     reason = "silence"
                     break
                 if time.monotonic() - started > self.cfg.max_session:
@@ -298,11 +334,12 @@ class App:
                 # that would end the new session.
                 self.hook.set_off_hook_light(False)
             await self._play_cue("ERROR" if failed else "END")
-            speaker = voice_session.speaker if voice_session else None
-            self.memory.save_session(session.history, person=speaker)
+            self.memory.save_session(session.history, people=session.people)
+            self._summarise_later(session.history, session.people)
             self.current_voice.session = None
-            if speaker:
-                log.info("session was with %s", speaker)
+            people = sorted(set(session.people.values()))
+            if people:
+                log.info("session was with %s", ", ".join(people))
             log.info("session ended (%s) after %.0f s", reason, time.monotonic() - started)
             if not self._restarting:
                 self._listen_for_wake_word()

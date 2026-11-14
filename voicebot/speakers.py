@@ -19,6 +19,11 @@ IDENTIFY_SECONDS = 4.0  # only the end of a long sentence is needed to recognise
 ENROL_MIN_SECONDS = 6.0
 ENROL_MAX_SECONDS = 25.0
 MIN_TURN_SECONDS = 0.6
+SHORT_TURN_SECONDS = 1.5
+PART_SECONDS = 2.5  # long sentences are checked in two parts: two people often talk in one 'sentence'  # shorter sentences are judged together with the one before
+# A sentence this close to another known person is theirs, not the new speaker's (a family member
+# can score 0.6-0.7 against a relative, so the bar is higher than the recognition threshold).
+OTHER_PERSON_SCORE = 0.75
 RECORD_SECONDS = 60
 FILE_MODE = 0o640
 
@@ -114,9 +119,12 @@ class VoiceSession:
         self.voices = voices
         self.person_context = person_context
         self.segments: list[bytes] = []
-        self.prints: list[tuple[object, float]] = []
-        self.speaker: str | None = None
-        self.announced = False
+        self.last_print: tuple[object, float] | None = None
+        self.speaker: str | None = None  # who spoke last, as far as the bot can tell
+        self.turn_name: str | None = None  # who said the latest sentence (None: not recognised)
+        self.turns_by: dict[str, int] = {}
+        self.introduced: set[str] = set()
+        self.announced = False  # the current speaker has been introduced to the model
         self.recorded = bytearray()
         self.dropped = 0  # bytes cut from the front of the recording
 
@@ -134,32 +142,58 @@ class VoiceSession:
         return bytes(self.recorded[start:end])
 
     async def add_turn(self, pcm: bytes) -> None:
+        self.turn_name = None
         seconds = len(pcm) / BYTES_PER_SECOND
         if seconds < MIN_TURN_SECONDS:
             return
         self.segments.append(pcm[-int(ENROL_MAX_SECONDS * BYTES_PER_SECOND):])
         if not self.voices.profiles:
             return
-        tail = pcm[-int(IDENTIFY_SECONDS * BYTES_PER_SECOND):]
-        vector = await asyncio.to_thread(self.voices.embed, tail)
-        self.prints.append((vector, min(seconds, IDENTIFY_SECONDS)))
-        name, ranked = self.voices.identify(self._average())
-        log.info("voice: %s (%.1f s this turn, %d turns); scores %s", name or "not recognised", seconds,
-                 len(self.prints), ", ".join(f"{n} {s:.2f}" for s, n in ranked[:3]))
-        if name and not self.speaker:
-            self.speaker = name
+        # Each sentence is judged on its own: several people often talk in one conversation.
+        if seconds >= 2 * PART_SECONDS:
+            part = int(PART_SECONDS * BYTES_PER_SECOND) & ~1
+            last, before = await asyncio.to_thread(
+                lambda: (self.voices.embed(pcm[-part:]), self.voices.embed(pcm[-2 * part:-part])))
+            names = {self.voices.identify(last)[0], self.voices.identify(before)[0]}
+            if len(names) > 1:
+                log.info("voice: two voices in one sentence (%.1f s): %s", seconds,
+                         " / ".join(n or "not recognised" for n in names))
+                self.last_print = None
+                return
+            vector, weight = self._blend([(last, 1.0), (before, 1.0)]), 2 * PART_SECONDS
+        else:
+            vector = await asyncio.to_thread(self.voices.embed, pcm[-int(IDENTIFY_SECONDS * BYTES_PER_SECOND):])
+            weight = min(seconds, IDENTIFY_SECONDS)
+        judged = vector
+        if seconds < SHORT_TURN_SECONDS and self.last_print is not None:
+            judged = self._blend([(vector, weight), self.last_print])
+        self.last_print = (vector, weight)
+        name, ranked = self.voices.identify(judged)
+        log.info("voice: %s (%.1f s this turn); scores %s", name or "not recognised", seconds,
+                 ", ".join(f"{n} {s:.2f}" for s, n in ranked[:3]))
+        if not name:
+            return
+        self.turn_name = name
+        self.turns_by[name] = self.turns_by.get(name, 0) + 1
+        if name != self.speaker:
+            if self.speaker:
+                log.info("voice: speaker changed from %s to %s", self.speaker, name)
+            self.speaker, self.announced = name, False
 
-    def _average(self):
+    def _blend(self, prints):
         np = self.voices.np
-        total = sum(w for _, w in self.prints)
-        mean = sum(v * w for v, w in self.prints) / total
+        total = sum(w for _, w in prints)
+        mean = sum(v * w for v, w in prints) / total
         return mean / (np.linalg.norm(mean) or 1.0)
 
     def introduction(self) -> str | None:
-        """Once per session, after the speaker is recognised: who it is and their own memory."""
+        """When the recognised speaker changes: who it is and, the first time, their own memory."""
         if not self.speaker or self.announced:
             return None
         self.announced = True
+        if self.speaker in self.introduced:
+            return f"The person speaking now is {self.speaker} again (recognised by voice)."
+        self.introduced.add(self.speaker)
         text = (f"The person speaking now is {self.speaker} (recognised by voice). Greet them by name once, "
                 f"naturally, in their language. Facts they ask you to remember are saved to their own memory.")
         if self.person_context:
@@ -167,6 +201,18 @@ class VoiceSession:
             if extra:
                 text += "\n\n" + extra
         return text
+
+    def _own_segments(self, name: str) -> list[bytes]:
+        """This conversation's sentences, without those clearly said by another known person."""
+        kept = []
+        for pcm in self.segments:
+            ranked = self.voices.scores(self.voices.embed(pcm)) if self.voices.profiles else []
+            if ranked and ranked[0][1] != name and ranked[0][0] >= OTHER_PERSON_SCORE:
+                log.info("voices: leaving out %.1f s that sound like %s (%.2f)",
+                         len(pcm) / BYTES_PER_SECOND, ranked[0][1], ranked[0][0])
+                continue
+            kept.append(pcm)
+        return kept
 
     async def remember_voice(self, name: str) -> dict:
         name = " ".join(name.split()).strip().title()[:40]
@@ -177,10 +223,25 @@ class VoiceSession:
             return {"status": "need more speech", "seconds_heard": round(seconds, 1),
                     "instruction": "Ask the user to say a few sentences about anything (about 10 seconds), "
                                    "then call remember_voice again with the same name."}
-        audio = b"".join(self.segments)[-int(ENROL_MAX_SECONDS * BYTES_PER_SECOND):]
+        segments = await asyncio.to_thread(self._own_segments, name)
+        seconds = sum(len(s) for s in segments) / BYTES_PER_SECOND
+        if seconds < ENROL_MIN_SECONDS:
+            return {"status": "need more speech", "seconds_heard": round(seconds, 1),
+                    "instruction": "Ask the user to say a few sentences about anything (about 10 seconds), "
+                                   "then call remember_voice again with the same name."}
+        audio = b"".join(segments)[-int(ENROL_MAX_SECONDS * BYTES_PER_SECOND):]
         vector = await asyncio.to_thread(self.voices.embed, audio)
+        if name in self.voices.profiles:
+            match = dict((n, s) for s, n in self.voices.scores(vector)).get(name, 0.0)
+            if match < self.voices.threshold:
+                log.info("voices: not saved: this voice does not match %s (%.2f)", name, match)
+                return {"error": f"This voice does not match the saved voice of {name}; nothing was saved.",
+                        "instruction": "This is probably a different person. Ask for their own name and call "
+                                       "remember_voice with it. Never save a voice under someone else's name."}
         self.voices.enrol(name, vector, min(seconds, ENROL_MAX_SECONDS))
         self.speaker, self.announced = name, True
+        self.introduced.add(name)
+        self.turns_by[name] = self.turns_by.get(name, 0) + 1
         return {"status": "voice saved", "name": name,
                 "instruction": f"Tell {name} you will recognise their voice from now on."}
 

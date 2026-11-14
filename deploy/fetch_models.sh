@@ -24,5 +24,11 @@ mkdir -p "$DIR/speaker"
 f=wespeaker_en_voxceleb_resnet34_LM.onnx
 [[ -s $DIR/speaker/$f ]] || curl -fsSL -o "$DIR/speaker/$f" "$SPEAKER/$f"
 
+# Text meaning model for searching past conversations (multilingual-e5-small, int8, ~118 MB)
+E5=https://huggingface.co/Xenova/multilingual-e5-small/resolve/761b726dd34fb83930e26aab4e9ac3899aa1fa78
+mkdir -p "$DIR/e5"
+[[ -s $DIR/e5/model.onnx ]] || curl -fsSL -o "$DIR/e5/model.onnx" "$E5/onnx/model_quantized.onnx"
+[[ -s $DIR/e5/tokenizer.json ]] || curl -fsSL -o "$DIR/e5/tokenizer.json" "$E5/tokenizer.json"
+
 chmod -R o-w "$DIR"
 du -sh "$DIR"/* 

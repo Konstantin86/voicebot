@@ -21,8 +21,11 @@ class SessionIO:
     greeting: str | None = None  # if set, the bot says this first
     thinking_sound: bytes | None = None  # played while a tool runs
     history: list[tuple[str, str]] = field(default_factory=list)  # (role, text) turns of this session
+    people: dict[int, str] = field(default_factory=dict)  # history index of a user turn -> who said it
     voice_session: Any = None  # speakers.VoiceSession: who is speaking
     end_ready: bool = False  # the bot said goodbye and wants to hang up
+    engaged: bool = False  # someone is talking to the bot: it answered and has not ignored speech since
+    ignored_in_row: int = 0  # sentences in a row that were not said to the bot
     user_speaking: bool = False
     last_activity: float = field(default_factory=time.monotonic)
 

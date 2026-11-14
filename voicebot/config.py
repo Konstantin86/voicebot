@@ -52,9 +52,12 @@ class Config:
     jabra_name: str
     context_file: str
     idle_timeout: float
+    wake_idle_timeout: float
     max_session: float
     state_file: str
     memory_dir: str
+    qdrant_url: str
+    qdrant_api_key: str
     weather_home: str
     wake_word: bool
     wake_threshold: float
@@ -92,9 +95,12 @@ class Config:
             jabra_name=_env("JABRA_NAME", "Jabra"),
             context_file=_env("CONTEXT_FILE", "/etc/voicebot/context.md"),
             idle_timeout=float(_env("IDLE_TIMEOUT", "30")),
+            wake_idle_timeout=float(_env("WAKE_IDLE_TIMEOUT", "10")),
             max_session=float(_env("MAX_SESSION", "900")),
             state_file=_env("STATE_FILE", "/var/lib/voicebot/state.json"),
             memory_dir=_env("MEMORY_DIR", "/var/lib/voicebot/memory"),
+            qdrant_url=_env("QDRANT_URL", "http://localhost:6333"),
+            qdrant_api_key=_env("QDRANT_API_KEY"),
             weather_home=_env("WEATHER_HOME"),
             wake_word=_env_bool("WAKE_WORD", True),
             wake_threshold=float(_env("WAKE_THRESHOLD", "0.5")),
@@ -106,7 +112,7 @@ class Config:
             voices_file=_env("VOICES_FILE", "/var/lib/voicebot/voices.json"),
             weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
             memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
-            memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "20")),
+            memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "80")),
         )
         if cfg.voice not in cfg.voices:
             cfg.voices.insert(0, cfg.voice)

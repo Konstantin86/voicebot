@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from azure.ai.voicelive.aio import connect
-from azure.ai.voicelive.models import FunctionCallOutputItem, InputTextContentPart, SystemMessageItem
+from azure.ai.voicelive.models import FunctionCallOutputItem, InputTextContentPart, SystemMessageItem, UserMessageItem
 from azure.ai.voicelive.models import ServerEventType as E
 from azure.core.credentials import AzureKeyCredential
 
@@ -14,7 +14,7 @@ from ..config import Config
 from .base import SessionIO
 from ..goodbye import is_goodbye
 from ..language import add_language_hint, detect_language
-from ..tools.memory_tools import END_SESSION
+from ..tools.memory_tools import END_SESSION, IGNORE_SPEECH
 from ..usage import DailyUsage, TokenTotals, prices_for
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ GOODBYE_REPLY_START_SECONDS = 2
 GOODBYE_REPLY_MAX_SECONDS = 15
 REPLY_WITHOUT_TRANSCRIPT_SECONDS = 2.0
 VOICE_WAIT_SECONDS = 1.0
+IGNORED_IN_ROW_TO_END = 2  # hang up after this many sentences in a row not said to the bot
+# Azure re-reads the whole conversation (including all audio) before each answer, so long talks get slow:
+# older items are dropped. 30 items is about the last 8-10 exchanges.
+KEEP_ITEMS = 30
 STALL_SECONDS = 10  # no event from Azure for this long while an answer is due = stalled
 QUIET_EVENTS = ("delta",)  # left out of the event history
 TRANSCRIBE_PHRASES = ["Jarvis", "Джарвис", "Джарвіс", "YouTube", "Netflix", "PS5", "Price Navigator"]
@@ -107,6 +111,41 @@ class VoiceLiveBrain:
         await asyncio.wait_for(run(), timeout)
         return bytes(audio)
 
+    async def summarize(self, instructions: str, text: str, model: str, timeout: float = 30) -> str:
+        """A text-only answer to one request (used to summarise a finished conversation)."""
+        kwargs: dict[str, Any] = {}
+        if self.cfg.api_version:
+            kwargs["api_version"] = self.cfg.api_version
+        parts: list[str] = []
+        usage = TokenTotals()
+
+        async def run() -> None:
+            async with connect(
+                endpoint=self.cfg.endpoint, credential=AzureKeyCredential(self.cfg.api_key), model=model, **kwargs
+            ) as conn:
+                await conn.session.update(session={"modalities": ["text"], "turn_detection": None,
+                                                   "instructions": instructions})
+                await conn.conversation.item.create(
+                    item=UserMessageItem(content=[InputTextContentPart(text=text)]))
+                await conn.response.create()
+                async for event in conn:
+                    if event.type == E.RESPONSE_TEXT_DELTA:
+                        parts.append(event.delta)
+                    elif event.type == E.RESPONSE_DONE:
+                        if event.response and event.response.usage:
+                            usage.add_usage(event.response.usage)
+                        return
+                    elif event.type == E.ERROR:
+                        raise RuntimeError(event.error.message)
+
+        try:
+            await asyncio.wait_for(run(), timeout)
+        finally:
+            cost = usage.cost(prices_for(model))
+            log.info("summary tokens (%s): %s, est. $%.4f; today so far: est. $%.4f",
+                     model, usage.describe(), cost, self.today.add(cost))
+        return "".join(parts).strip()
+
     def _session_config(self, s: SessionIO) -> dict[str, Any]:
         cfg = self.cfg
         voice = _voice_config(s.voice)
@@ -159,6 +198,7 @@ class VoiceLiveBrain:
     async def _receive(self, conn, s: SessionIO, usage: TokenTotals) -> None:
         turn = _Turn()
         turn.voice = s.voice_session
+        turn.people = s.people
         background: set[asyncio.Task] = set()
         tool_tasks: list[asyncio.Task] = []
         end_requested = False
@@ -179,6 +219,7 @@ class VoiceLiveBrain:
                     if turn.waiting_for_audio:
                         turn.waiting_for_audio = False
                         log.info("first answer audio %.1f s after speech ended", time.monotonic() - turn.stopped_at)
+                    s.engaged, s.ignored_in_row = True, 0
                     s.speaker.play(event.delta)
                     s.touch()
                 elif kind == E.INPUT_AUDIO_BUFFER_SPEECH_STARTED:
@@ -203,6 +244,7 @@ class VoiceLiveBrain:
                     turn.user_text = event.transcript.strip()
                     turn.transcript_ready.set()
                     s.history.append(("user", turn.user_text))
+                    turn.history_index = len(s.history) - 1
                     log.info("user: %s", turn.user_text)
                     language = detect_language(turn.user_text)
                     if language:
@@ -226,9 +268,16 @@ class VoiceLiveBrain:
                         # The goodbye was spoken in this same response; hang up once it has played.
                         end_requested = True
                         continue
+                    if event.name == IGNORE_SPEECH:
+                        await self._ignore(conn, s, turn, event.call_id)
+                        continue
                     if s.thinking_sound:
                         s.speaker.play(s.thinking_sound)
                     tool_tasks.append(spawn(self._run_tool(conn, s, event, turn)))
+                elif kind == E.CONVERSATION_ITEM_CREATED:
+                    item_id = getattr(getattr(event, "item", None), "id", None)
+                    if item_id:
+                        turn.items.append(item_id)
                 elif kind == E.RESPONSE_CREATED:
                     turn.responding.set()
                     turn.response_finished.clear()
@@ -242,6 +291,8 @@ class VoiceLiveBrain:
                         log.warning("response %s: %s", status, details.as_dict() if hasattr(details, "as_dict") else details)
                     if event.response and event.response.usage:
                         usage.add_usage(event.response.usage)
+                    if len(turn.items) > KEEP_ITEMS and not tool_tasks:
+                        spawn(self._drop_old_items(conn, turn))
                     if end_requested:
                         s.end_ready = True
                     elif tool_tasks:
@@ -263,6 +314,31 @@ class VoiceLiveBrain:
                 turn.watchdog.cancel()
             for task in background:
                 task.cancel()
+
+    async def _drop_old_items(self, conn, turn: "_Turn") -> None:
+        dropped = 0
+        while len(turn.items) > KEEP_ITEMS:
+            item_id = turn.items.popleft()
+            try:
+                await conn.conversation.item.delete(item_id=item_id)
+                dropped += 1
+            except Exception as e:
+                log.info("could not drop old item %s: %s", item_id, e)
+        if dropped:
+            log.info("dropped %d old conversation items to keep answers fast", dropped)
+
+    async def _ignore(self, conn, s: SessionIO, turn: "_Turn", call_id: str) -> None:
+        """The last sentence was not said to the bot: no answer, and hang up if it keeps happening."""
+        turn.waiting_for_audio = False
+        if turn.watchdog:
+            turn.watchdog.cancel()
+        s.engaged = False
+        s.ignored_in_row += 1
+        log.info("not said to the bot; staying quiet (%d in a row)", s.ignored_in_row)
+        await conn.conversation.item.create(item=tool_output_item(call_id, '{"status": "ignored"}'))
+        if s.ignored_in_row >= IGNORED_IN_ROW_TO_END:
+            log.info("people are talking to each other; hanging up")
+            s.end_ready = True
 
     async def _run_tool(self, conn, s: SessionIO, event, turn: "_Turn") -> None:
         turn.tools_running += 1
@@ -317,6 +393,8 @@ class VoiceLiveBrain:
         turn.awaiting_reply = False
         turn.waiting_for_audio = True
         await self._introduce_speaker(conn, turn)
+        if turn.voice and turn.voice.turn_name and turn.history_index is not None:
+            turn.people[turn.history_index] = turn.voice.turn_name
         log.info("reply started %.1f s after speech ended, language %s",
                  time.monotonic() - turn.stopped_at, turn.language or "not detected")
         await self._create_response(conn, turn)
@@ -377,7 +455,8 @@ def _language_rule(language: str | None) -> str | None:
     return (
         f"The user's last utterance was in {language}. Reply only in {language}, whatever language was used before. "
         "Start with the answer itself, without repeating the question or saying \"here's what I found\", "
-        "and do not end with an offer of more help."
+        "and do not end with an offer of more help. If it was not said to you (people talking to each other, "
+        "the TV), call ignore_speech and say nothing."
     )
 
 
@@ -396,6 +475,9 @@ class _Turn:
         self.tools_running = 0
         self.last_event = time.monotonic()
         self.events: collections.deque = collections.deque(maxlen=30)
+        self.people: dict[int, str] = {}  # SessionIO.people
+        self.history_index: int | None = None  # this sentence's place in SessionIO.history
+        self.items: collections.deque = collections.deque()  # conversation item ids, oldest first
         self.transcript_ready = asyncio.Event()
         self.transcript_ready.set()
         self.responding = asyncio.Event()

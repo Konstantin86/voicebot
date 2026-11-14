@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 
 MAX_FACT_CHARS = 300
 MAX_TURN_CHARS = 400
+RECENT_CHARS = 8000  # about 2,500 tokens of recent conversations in each new session
 FILE_MODE = 0o640  # bot and its group only: conversations are private
 
 
@@ -23,7 +24,7 @@ class Fact:
 
 
 class Memory:
-    def __init__(self, directory: str, recent_hours: float = 12, recent_turns: int = 20, max_facts: int = 100):
+    def __init__(self, directory: str, recent_hours: float = 12, recent_turns: int = 80, max_facts: int = 100):
         self.directory = directory
         self.recent_hours = recent_hours
         self.recent_turns = recent_turns
@@ -91,15 +92,14 @@ class Memory:
 
     # Short-term history
 
-    def save_session(self, turns: list[tuple[str, str]], person: str | None = None) -> None:
-        """Appends one session's turns (role, text). Sessions without user speech are skipped."""
+    def save_session(self, turns: list[tuple[str, str]], person: str | None = None,
+                     people: dict[int, str] | None = None) -> None:
+        """Appends one session's turns (role, text). people: history index of a user turn -> who said it;
+        a reply belongs to the person whose sentence it answers. Sessions without user speech are skipped."""
         if not any(role == "user" for role, _ in turns):
             return
-        record = {
-            "time": time.time(),
-            "person": person,
-            "turns": [[role, text[:MAX_TURN_CHARS]] for role, text in turns if text.strip()],
-        }
+        rows = [[role, text[:MAX_TURN_CHARS], who] for role, text, who in with_people(turns, people, person)]
+        record = {"time": time.time(), "turns": rows}
         try:
             fd = os.open(self.history_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, FILE_MODE)
             with os.fdopen(fd, "a", encoding="utf-8") as f:
@@ -108,12 +108,10 @@ class Memory:
         except OSError as e:
             log.warning("memory: cannot save history: %s", e)
 
-    def recent(self, now: float | None = None, person: str | None = None) -> list[tuple[float, str, str]]:
-        """(session time, role, text) for the last recent_turns turns from the last recent_hours,
-        of this person's conversations (None = conversations with nobody recognised)."""
+    def _recent_turns(self, now: float | None) -> list[tuple[float, str | None, str, str]]:
+        """(session time, person, role, text) from the last recent_hours, oldest first."""
         now = now or time.time()
         cutoff = now - self.recent_hours * 3600
-        turns: list[tuple[float, str, str]] = []
         try:
             with open(self.history_file, encoding="utf-8") as f:
                 lines = f.readlines()
@@ -122,16 +120,38 @@ class Memory:
         except OSError as e:
             log.warning("memory: cannot read history: %s", e)
             return []
+        turns = []
         for line in lines:
             try:
                 record = json.loads(line)
             except ValueError:
                 continue
-            if record.get("time", 0) >= cutoff and record.get("person") == person:
-                turns.extend((record["time"], role, text) for role, text in record.get("turns", []))
+            if record.get("time", 0) < cutoff:
+                continue
+            for row in record.get("turns", []):
+                who = row[2] if len(row) > 2 else record.get("person")
+                turns.append((record["time"], who, row[0], row[1]))
         if len(lines) > 500:
             self._trim_history(lines[-200:])
-        return turns[-self.recent_turns:]
+        return turns
+
+    def _within_budget(self, turns: list) -> list:
+        kept, size = [], 0
+        for turn in reversed(turns[-self.recent_turns:]):
+            size += len(turn[-1])
+            if size > RECENT_CHARS:
+                break
+            kept.append(turn)
+        return kept[::-1]
+
+    def recent(self, now: float | None = None, person: str | None = None) -> list[tuple[float, str, str]]:
+        """(session time, role, text) of this person's recent turns (None = nobody recognised)."""
+        return self._within_budget([(when, role, text) for when, who, role, text in self._recent_turns(now)
+                                    if who == person])
+
+    def recent_all(self, now: float | None = None) -> list[tuple[float, str | None, str, str]]:
+        """The whole household's recent turns: (session time, person, role, text)."""
+        return self._within_budget(self._recent_turns(now))
 
     def _trim_history(self, lines: list[str]) -> None:
         tmp = self.history_file + ".tmp"
@@ -146,30 +166,41 @@ class Memory:
     # Prompt text
 
     def prompt_text(self, now: float | None = None, person: str | None = None) -> str:
-        """Memory for the prompt. Without a person: shared facts and unrecognised conversations.
-        With a person: only that person's own facts and conversations."""
+        """Memory for the prompt. Without a person: shared facts and the whole household's recent
+        conversations. With a person: only that person's own facts."""
         parts = []
         facts = [f for f in self.facts() if f.person == person]
         if facts:
             title = (f"{person}'s own memory (facts {person} asked you to remember; id in brackets)" if person
                      else "Long-term memory (shared household facts; id in brackets)")
             parts.append(title + ":\n" + "\n".join(f"[{f.id}] {f.text}" for f in facts))
-        recent = self.recent(now, person)
+        recent = [] if person else self.recent_all(now)
         if recent:
             lines, last_session = [], None
-            for session_time, role, text in recent:
+            for session_time, who, role, text in recent:
                 if session_time != last_session:
                     stamp = datetime.datetime.fromtimestamp(session_time).strftime("%H:%M")
                     lines.append(f"-- conversation at {stamp} --")
                     last_session = session_time
-                lines.append(f"{'User' if role == 'user' else 'You'}: {text}")
+                lines.append(f"{(who or 'Someone') if role == 'user' else 'You'}: {text}")
             parts.append(
-                (f"Recent conversations with {person} " if person else "Recent conversations ") +
-                "(earlier sessions today; use only if relevant, "
-                "do not bring them up unprompted). Your past replies below may be in the wrong language; "
-                "never copy their language:\n" + "\n".join(lines)
+                "Recent conversations of the household (earlier sessions in the last hours; 'Someone' = voice "
+                "not recognised; use only if relevant, do not bring them up unprompted). Your past replies "
+                "below may be in the wrong language; never copy their language:\n" + "\n".join(lines)
             )
         return "\n\n".join(parts)
+
+
+def with_people(turns: list[tuple[str, str]], people: dict[int, str] | None,
+                person: str | None = None) -> list[tuple[str, str, str | None]]:
+    """(role, text, who) for each non-empty turn; a reply belongs to the person whose sentence it answers."""
+    rows, owner = [], person
+    for index, (role, text) in enumerate(turns):
+        if role == "user" and people is not None:
+            owner = people.get(index)
+        if text.strip():
+            rows.append((role, text, owner))
+    return rows
 
 
 def _today() -> str:

@@ -4,6 +4,7 @@ from ..memory import Memory
 from . import Tool
 
 END_SESSION = "end_session"
+IGNORE_SPEECH = "ignore_speech"
 
 
 def make_tools(memory: Memory, current=None) -> list[Tool]:
@@ -72,6 +73,18 @@ def end_session_tool() -> Tool:
     )
 
 
+def ignore_speech_tool() -> Tool:
+    return Tool(
+        name=IGNORE_SPEECH,
+        description=(
+            "Call this, without saying anything, when what was just heard was not said to you: people talking "
+            "to each other, the TV, a fragment of someone else's conversation. When in doubt, answer instead."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=lambda: {"status": "ignored"},
+    )
+
+
 def voice_tools(voices, current) -> list[Tool]:
     """remember_voice / forget_voice. voices: speakers.Voices; current: speakers.Current."""
 
@@ -93,7 +106,9 @@ def voice_tools(voices, current) -> list[Tool]:
             description=(
                 "Save the voice of the person speaking so you recognise them later ('remember my voice', "
                 "'запам'ятай мій голос', 'запомни мой голос'). First ask their name if you do not know it. "
-                "Uses what they said in this conversation; it may ask for a few more sentences first."
+                "Uses what they said in this conversation; it may ask for a few more sentences first. "
+                "The name must be the one the person just gave for themselves, even if you took them for someone "
+                "else: voice recognition can be wrong, especially for children."
             ),
             parameters={
                 "type": "object",

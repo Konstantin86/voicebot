@@ -114,11 +114,11 @@ def test_web_search_tool_registered_only_with_key(monkeypatch):
 
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("TV_SETTINGS", "/nonexistent/tv.json")
-    assert default_registry().names() == ["end_session", "weather", "olx"]
+    assert default_registry().names() == ["end_session", "ignore_speech", "weather", "world_time", "olx"]
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     reg = default_registry()
-    assert reg.names() == ["end_session", "weather", "olx", "web_search", "price_lookup"]
-    assert reg.specs()[3]["parameters"]["required"] == ["query"]
+    assert reg.names() == ["end_session", "ignore_speech", "weather", "world_time", "olx", "web_search", "price_lookup"]
+    assert reg.specs()[5]["parameters"]["required"] == ["query"]
 
 
 
@@ -565,7 +565,7 @@ def test_memory_recent_history(tmp_path):
     assert [text for _, _, text in recent] == ["Where is Kharkiv?", "In Ukraine.", "Thanks"]
     assert m.recent(now=time.time() + 7200) == []
     text = m.prompt_text()
-    assert "Recent conversations" in text and "User: Thanks" in text and "Cedar" not in text
+    assert "Recent conversations" in text and "Someone: Thanks" in text and "Cedar" not in text
 
 
 def test_memory_in_instructions(tmp_path):
@@ -1292,8 +1292,8 @@ def test_memory_per_person(tmp_path):
     m.save_session([("user", "hello"), ("assistant", "Hi!")])
     shared = m.prompt_text()
     kostya = m.prompt_text(person="Kostya")
-    assert "Murka" in shared and "chocolate" not in shared and "Привет, Костя" not in shared and "Hi!" in shared
-    assert "chocolate" in kostya and "Murka" not in kostya and "French" not in kostya and "Привет, Костя" in kostya
+    assert "Murka" in shared and "chocolate" not in shared and "Привет, Костя" in shared and "Hi!" in shared
+    assert "chocolate" in kostya and "Murka" not in kostya and "French" not in kostya and "Привет, Костя" not in kostya
 
 
 class _FakeVoices:
@@ -1378,3 +1378,270 @@ def test_remember_goes_to_the_speaker(tmp_path):
     remember = next(t for t in make_tools(memory, current) if t.name == "remember").handler
     assert remember("Kostya likes tea.")["for"] == "Kostya"
     assert remember("The Wi-Fi is called KL_Link.", shared=True)["for"] == "everyone"
+
+
+def test_speech_not_for_the_bot_is_ignored_then_hangs_up():
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.voicelive import VoiceLiveBrain
+    from voicebot.tools import default_registry
+    from voicebot.usage import TokenTotals
+
+    items, responses = [], []
+
+    async def create_item(item):
+        items.append(item)
+
+    class FakeConn:
+        conversation = NS(item=NS(create=create_item))
+        response = NS(create=lambda **kw: responses.append(kw))
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for n in (1, 2):
+                yield NS(type="response.function_call_arguments.done", name="ignore_speech", arguments="{}",
+                         call_id=f"c{n}")
+                yield NS(type="response.done", response=None)
+                if n == 1:
+                    assert session.end_ready is False and session.ignored_in_row == 1
+            await asyncio.sleep(0.01)
+
+    speaker = NS(play=lambda b: None, clear=lambda: None, is_playing=lambda: False)
+    session = SessionIO(
+        mic=None, speaker=speaker, instructions="", tools=default_registry(), stop=asyncio.Event(),
+        model="m", voice="v", thinking_sound=b"tick",
+    )
+    brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    brain.cfg = NS(transcribe_model="mai-transcribe")
+    asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
+    assert session.end_ready is True
+    assert session.engaged is False
+    assert responses == []
+    assert len(items) == 2 and all(isinstance(i.output, str) for i in items)
+
+
+def test_voice_not_saved_under_someone_elses_name():
+    import asyncio
+
+    from voicebot.speakers import BYTES_PER_SECOND, VoiceSession
+
+    alina = [0.0, 1.0, 0.0, 0.0]
+    voices = _FakeVoices({"Алина": {"embedding": alina, "seconds": 14}})
+    child = bytes([2, 0]) * (BYTES_PER_SECOND // 2)
+
+    async def run():
+        session = VoiceSession(voices)
+        await session.add_turn(child * 8)
+        return await session.remember_voice("Алина")
+
+    result = asyncio.run(run())
+    assert "error" in result and voices.saved == []
+    assert voices.profiles["Алина"]["embedding"] == alina
+
+
+def test_enrolment_leaves_out_another_known_person():
+    import asyncio
+
+    from voicebot.speakers import BYTES_PER_SECOND, VoiceSession
+
+    voices = _FakeVoices({"Костя": {"embedding": [0.0, 1.0, 0.0, 0.0], "seconds": 13}})
+    kostya = bytes([1, 0]) * (BYTES_PER_SECOND // 2)
+    child = bytes([2, 0]) * (BYTES_PER_SECOND // 2)
+
+    async def run():
+        session = VoiceSession(voices)
+        await session.add_turn(kostya * 10)
+        first = await session.remember_voice("Настя")
+        await session.add_turn(child * 7)
+        second = await session.remember_voice("Настя")
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first["status"] == "need more speech"
+    assert second["status"] == "voice saved" and voices.saved == [("Настя", 7)]
+
+
+def test_voice_session_follows_who_speaks_each_sentence():
+    import asyncio
+
+    from voicebot.speakers import BYTES_PER_SECOND, VoiceSession
+
+    voices = _FakeVoices({"Костя": {"embedding": [0.0, 1.0, 0.0, 0.0], "seconds": 13},
+                          "Алина": {"embedding": [0.0, 0.0, 1.0, 0.0], "seconds": 13}})
+    second = BYTES_PER_SECOND // 2
+    kostya, alina = bytes([1, 0]) * second, bytes([2, 0]) * second
+
+    async def run():
+        session = VoiceSession(voices)
+        seen = []
+        for pcm in (kostya * 3, kostya * 2, alina * 3, kostya * 3, kostya * 2):
+            await session.add_turn(pcm)
+            seen.append((session.speaker, session.introduction()))
+        return session, seen
+
+    session, seen = asyncio.run(run())
+    assert [s for s, _ in seen] == ["Костя", "Костя", "Алина", "Костя", "Костя"]
+    assert "Greet" in seen[0][1] and seen[1][1] is None and "Алина" in seen[2][1]
+    assert "again" in seen[3][1] and seen[4][1] is None
+    assert session.turns_by == {"Костя": 4, "Алина": 1}
+
+
+def test_sentence_with_two_voices_is_not_given_to_either():
+    import asyncio
+
+    from voicebot.speakers import BYTES_PER_SECOND, VoiceSession
+
+    voices = _FakeVoices({"Костя": {"embedding": [0.0, 1.0, 0.0, 0.0], "seconds": 13}})
+    second = BYTES_PER_SECOND // 2
+    kostya, child = bytes([1, 0]) * second, bytes([2, 0]) * second
+
+    async def run():
+        session = VoiceSession(voices)
+        await session.add_turn(child * 3 + kostya * 3)
+        mixed = session.speaker
+        await session.add_turn(kostya * 6)
+        return mixed, session.speaker
+
+    assert asyncio.run(run()) == (None, "Костя")
+
+
+def test_old_conversation_items_are_dropped():
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from voicebot.brains import voicelive
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.voicelive import VoiceLiveBrain
+    from voicebot.tools import default_registry
+    from voicebot.usage import TokenTotals
+
+    deleted = []
+
+    async def delete(item_id):
+        deleted.append(item_id)
+
+    class FakeConn:
+        conversation = NS(item=NS(create=None, delete=delete))
+        response = NS(create=None)
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for n in range(voicelive.KEEP_ITEMS + 5):
+                yield NS(type="conversation.item.created", item=NS(id=f"i{n}"))
+            yield NS(type="response.done", response=None)
+            await asyncio.sleep(0.02)
+
+    speaker = NS(play=lambda b: None, clear=lambda: None, is_playing=lambda: False)
+    session = SessionIO(mic=None, speaker=speaker, instructions="", tools=default_registry(),
+                        stop=asyncio.Event(), model="m", voice="v")
+    brain = VoiceLiveBrain.__new__(VoiceLiveBrain)
+    brain.cfg = NS(transcribe_model="mai-transcribe")
+    asyncio.run(brain._receive(FakeConn(), session, TokenTotals()))
+    assert deleted == ["i0", "i1", "i2", "i3", "i4"]
+
+
+def test_conversation_saved_with_who_said_each_sentence(tmp_path):
+    from voicebot.memory import Memory
+
+    memory = Memory(str(tmp_path))
+    turns = [("user", "I like medium steaks"), ("assistant", "Noted."),
+             ("user", "I love Tanjiro"), ("assistant", "Cool!"),
+             ("user", "mumble"), ("assistant", "Sorry?")]
+    memory.save_session(turns, people={0: "Костя", 2: "Владик"})
+    assert [text for _, _, text in memory.recent(person="Костя")] == ["I like medium steaks", "Noted."]
+    assert [text for _, _, text in memory.recent()] == ["mumble", "Sorry?"]
+    text = memory.prompt_text()
+    assert "Костя: I like medium steaks" in text and "Владик: I love Tanjiro" in text and "Someone: mumble" in text
+    assert "Tanjiro" not in memory.prompt_text(person="Костя")
+
+
+class _FakeEmbedder:
+    """Meaning = which of a few topic words the text contains."""
+
+    TOPICS = ["sofa", "iphone", "cartoon"]
+
+    def embed(self, texts, kind="passage"):
+        rows = []
+        for text in texts:
+            v = [1.0 if t in text.lower() else 0.0 for t in self.TOPICS] + [0.1]
+            n = sum(x * x for x in v) ** 0.5
+            rows.append([x / n for x in v])
+        return rows
+
+
+class _FakeQdrant:
+    def __init__(self):
+        self.points = {}
+
+    def upsert(self, point_id, vector, payload):
+        self.points[point_id] = (vector, payload)
+
+    def search(self, vector, limit):
+        scored = [{"score": sum(a * b for a, b in zip(vector, v)), "payload": p} for v, p in self.points.values()]
+        return sorted(scored, key=lambda h: -h["score"])[:limit]
+
+
+def test_archive_saves_and_finds_past_conversations(tmp_path):
+    import asyncio
+    import json
+
+    from voicebot import archive
+
+    store = archive.Archive(str(tmp_path), _FakeEmbedder(), _FakeQdrant())
+    store.add(1_700_000_000, ["Костя"], "The dog peed on the sofa; cleaned with vinegar.", "Костя: собака…")
+    store.add(1_700_100_000, ["Алина"], "Alina looked for an iPhone 15 on OLX.", "Алина: айфон…")
+    tool = archive.search_tool(store)
+    out = asyncio.run(tool.handler(query="sofa accident"))
+    assert out["found"][0]["summary"].startswith("The dog peed on the sofa")
+    assert out["found"][0]["people"] == ["Костя"] and out["closest_transcript"] == "Костя: собака…"
+    saved = [json.loads(line) for line in open(tmp_path / "summaries.jsonl", encoding="utf-8")]
+    assert [s["people"] for s in saved] == [["Костя"], ["Алина"]] and "transcript" not in saved[0]
+
+
+def test_archive_transcript_names_speakers():
+    from voicebot.archive import transcript_text
+    from voicebot.memory import with_people
+
+    rows = with_people([("user", "Hi"), ("assistant", "Hello"), ("user", "mm"), ("assistant", "")], {0: "Костя"})
+    assert transcript_text(rows) == "Костя: Hi\nBot: Hello\nSomeone: mm"
+
+
+def test_past_conversations_rule_only_with_archive(tmp_path):
+    with_archive = build_instructions(str(tmp_path / "none.md"), past=True)
+    assert "search_memory" in with_archive and "Never search for ordinary questions" in with_archive
+    assert "search_memory" not in build_instructions(str(tmp_path / "none.md"))
+
+
+def test_embedder_matches_meaning_across_languages():
+    import os
+
+    import pytest
+
+    model = os.environ.get("E5_MODEL_DIR", "")
+    if not os.path.exists(os.path.join(model, "model.onnx")):
+        pytest.skip("set E5_MODEL_DIR to the multilingual-e5-small folder to run")
+    from voicebot.archive import Embedder
+
+    e = Embedder(model)
+    docs = e.embed(["The dog peed on the blue sofa; cleaned it with vinegar and baking soda.",
+                    "Alina searched OLX for a used iPhone 15 in Kharkiv."])
+    query = e.embed(["что случилось с нашим диваном?"], kind="query")[0]
+    scores = [sum(a * b for a, b in zip(query, d)) for d in docs]
+    assert scores[0] > scores[1]
+
+
+def test_world_time_from_local_clock():
+    from datetime import datetime, timezone
+
+    from voicebot.tools.clock import world_time
+
+    now = datetime(2026, 11, 14, 22, 50, tzinfo=timezone.utc)  # 00:50 on the 15th in Kyiv
+    out = world_time("Pacific/Auckland", "New Zealand", now=now)
+    assert out["time_there"] == "11:50" and out["date_there"].startswith("Sunday, 15 November")
+    assert "error" in world_time("Middle/Earth")
