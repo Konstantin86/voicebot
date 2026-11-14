@@ -51,7 +51,10 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
       per-turn language rule; memory no longer pulls replies into Ukrainian.
     - ✅ No more Belarusian transcripts: MAI Transcribe (no Belarusian) replaces gpt-4o-mini-transcribe;
       transcripts also arrive faster (replies 0.1–0.4 s after speech).
-    - ⬜ Try Azure multilingual / HD voices and `mai-transcribe`; compare by ear.
+    - ✅ `mai-transcribe` (now the default; see above).
+    - ✅ OpenAI voices compared by ear with the dot button; marin chosen.
+    - ⬜ Try Azure multilingual / HD voices (e.g. `en-US-Ava:DragonHDLatestNeural`, Ukrainian voices):
+      add them to `VOICES` and compare with the dot button.
 12. ⬜ **Deployment you can trust:**
     - `make deploy`: copy code, restart, check it started (sudo rule limited to that one restart).
     - GitHub Actions running the tests on every push.
