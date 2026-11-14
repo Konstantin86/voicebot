@@ -75,7 +75,12 @@ def default_registry(memory=None, weather_home: str = "", weather_detect_home: b
         log.info("web_search and price_lookup disabled (no TAVILY_API_KEY)")
     youtube_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
     find_video = youtube.make_video_finder(youtube_key) if youtube_key else tavily_video_finder
-    tv_tool = tv.make_tool(os.environ.get("TV_SETTINGS", "/var/lib/voicebot/tv.json"), find_video)
+    tv_tool = tv.make_tool(
+        os.environ.get("TV_SETTINGS", "/var/lib/voicebot/tv.json"),
+        find_video,
+        films_index=os.environ.get("TV_FILMS_INDEX", "/var/lib/voicebot/films.tsv"),
+        media_root=os.environ.get("TV_MEDIA_ROOT", "/tmp/usb/sda/sda2"),
+    )
     if tv_tool:
         registry.register(tv_tool)
         log.info("tv tool enabled; video search: %s",

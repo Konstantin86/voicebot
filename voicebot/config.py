@@ -74,7 +74,7 @@ class Config:
             smart_model=_env("VOICELIVE_SMART_MODEL", "gpt-realtime"),
             api_version=_env("VOICELIVE_API_VERSION"),
             voice=_env("VOICE", "marin"),
-            voices=[v.strip() for v in _env("VOICES", "marin,cedar,coral,ash,sage").split(",") if v.strip()],
+            voices=[v.strip() for v in _env("VOICES", "marin,cedar,coral,ash,sage,en-US-Ava:DragonHDLatestNeural,en-US-Andrew2:DragonHDLatestNeural,en-US-Emma2:DragonHDLatestNeural,en-US-Ava:DragonHDOmniLatestNeural").split(",") if v.strip()],
             turn_detection=_env("TURN_DETECTION", "azure_semantic_vad_multilingual"),
             turn_silence_ms=int(_env("TURN_SILENCE_MS", "800")),
             transcribe_model=_env("TRANSCRIBE_MODEL", "mai-transcribe"),

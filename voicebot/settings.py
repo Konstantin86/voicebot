@@ -51,8 +51,16 @@ class RuntimeSettings:
 
 
 def voice_display_name(voice: str) -> str:
-    """'marin' -> 'Marin', 'en-US-Ava:DragonHDLatestNeural' -> 'Ava'."""
-    name = voice.split(":")[0].split("-")[-1]
+    """'marin' -> 'Marin', 'en-US-Andrew2:DragonHDLatestNeural' -> 'Andrew HD',
+    'en-US-Ava:DragonHDOmniLatestNeural' -> 'Ava Omni'."""
+    name, _, model = voice.partition(":")
+    name = name.split("-")[-1]
     for suffix in ("MultilingualNeural", "Neural"):
         name = name.removesuffix(suffix)
-    return name[:1].upper() + name[1:]
+    name = name.rstrip("0123456789")
+    name = name[:1].upper() + name[1:]
+    if "DragonHDOmni" in model:
+        return f"{name} Omni"
+    if "DragonHD" in model:
+        return f"{name} HD"
+    return name

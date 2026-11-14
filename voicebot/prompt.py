@@ -38,6 +38,13 @@ TV (only if you have the tv tool):
   When the user names a channel, pass it as channel; for "the latest / newest video", set latest.
   App, input and channel names go in their usual (English) spelling, whatever language the user speaks.
 - Say the video's title briefly after it starts.
+- "Play <film> on the TV" means a film on the TV's disk: call tv with action play_film, the English title,
+  the title as the user said it and the Russian title. If it returns options, ask which one (title and year, briefly),
+  then call play_film with that file. If the TV is off, turn it on first.
+- "Find … in the browser on the TV" / "search the web on the TV": call tv with action browse and search
+  (or url for a named website). This shows results on the TV screen; do not read them out.
+- Once a film or YouTube video starts, confirm in a few words and call end_session: the microphone
+  would otherwise hear the TV.
 - After a TV action, confirm in a few words ("Done", "Turning on the TV").
 
 Memory and ending:

@@ -16,6 +16,10 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
    - ✅ Weather (Open-Meteo: free, no key). Home city from `WEATHER_HOME`, the `Location:` line in
      context.md, or detected from the internet address (IP).
    - ✅ LG TV (webOS 6, C1): on (Wake-on-LAN) / off, apps, inputs (PS5), volume, mute, pause/play.
+   - ✅ Films from the TV's USB disk by voice ("play Moana"): film list from the disk, matching in three
+     languages with near-word matching, asks when several fit; waits for the disk after power-on; hangs up
+     once a film or video starts.
+   - ✅ TV web browser: web search or a website on the TV screen.
    - ✅ YouTube on the TV: video by description, by channel, or the channel's latest
      (YouTube Data API, ~90 searches a day); gets past YouTube's account screen.
    - ✅ OLX.ua: cheapest listings by city or all of Ukraine, price range, listing details and warning signs
@@ -53,8 +57,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
       transcripts also arrive faster (replies 0.1–0.4 s after speech).
     - ✅ `mai-transcribe` (now the default; see above).
     - ✅ OpenAI voices compared by ear with the dot button; marin chosen.
-    - ⬜ Try Azure multilingual / HD voices (e.g. `en-US-Ava:DragonHDLatestNeural`, Ukrainian voices):
-      add them to `VOICES` and compare with the dot button.
+    - ✅ Azure HD voices tried in all three languages; the English ones (Ava, Andrew2, Emma2, Ava Omni) sound
+      best and are in `VOICES`.
 12. ⬜ **Deployment you can trust:**
     - `make deploy`: copy code, restart, check it started (sudo rule limited to that one restart).
     - GitHub Actions running the tests on every push.
@@ -103,3 +107,4 @@ Timers and reminders (3) → morning brief (4) → deployment (12) → more of t
 - Azure sometimes stalls mid-session; a watchdog now logs Azure's last events and retries once. Watch the logs.
 - OS: reinstall Ubuntu 26.04 LTS later (see `docs/NEXT_STEPS.md`).
 - Remove the leftover wake word test files in `/tmp` on the Pi.
+- Film list: rebuild with deploy/index_films.sh when films are added (disk on the Pi for a moment).

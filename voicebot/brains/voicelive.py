@@ -245,6 +245,10 @@ class VoiceLiveBrain:
                 elif kind == E.WARNING:
                     log.warning("voice live warning: %s", event.as_dict())
         finally:
+            if turn.waiting_for_audio and not end_requested:
+                now = time.monotonic()
+                log.warning("session ended while an answer was due; Azure's last events: %s",
+                            ", ".join(f"{kind} ({now - t:.0f} s ago)" for t, kind in list(turn.events)[-12:]) or "none")
             if turn.watchdog:
                 turn.watchdog.cancel()
             for task in background:

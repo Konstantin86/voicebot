@@ -10,9 +10,10 @@ import os
 import re
 import socket
 from collections.abc import Awaitable, Callable
+from urllib.parse import quote_plus
 from typing import Any
 
-from . import Tool
+from . import Tool, films
 
 log = logging.getLogger(__name__)
 
@@ -21,13 +22,23 @@ WAKE_SECONDS = 20
 YOUTUBE_START_SECONDS = 6
 YOUTUBE_PROFILE_SECONDS = 2
 VOLUME_STEP_DEFAULT = 3
+MEDIA_PLAYER_APP = "com.webos.app.mediadiscovery"
+BROWSER_APP = "com.webos.app.browser"
+SEARCH_URL = "https://www.google.com/search?q="
+SURE_SCORE = 0.9  # play the best film match right away when it is this good and clearly ahead
+CLEAR_LEAD = 0.13
+DISK_READY_SECONDS = 25  # after the bot turns the TV on, its USB disk needs time before files open
+WATCHING_NOTE = ("It is playing now. Confirm in a few words and then call end_session, "
+                 "so the TV's sound is not taken for the user's speech.")
 
 ACTIONS = ["on", "off", "open_app", "input", "volume_up", "volume_down", "set_volume", "mute", "unmute",
-           "pause", "play", "youtube", "status"]
+           "pause", "play", "youtube", "play_film", "browse", "status"]
 
 DESCRIPTION = (
     "Control the living room LG TV: turn on/off, open an app (YouTube, Netflix…), switch input "
-    "(e.g. PS5, HDMI 2), volume, mute, pause/play, or play a YouTube video found by a search query."
+    "(e.g. PS5, HDMI 2), volume, mute, pause/play, play a YouTube video found by a search query, "
+    "play a film or series episode from the disk attached to the TV (play_film), "
+    "or open the TV's web browser with a web search or a website (browse)."
 )
 PARAMETERS = {
     "type": "object",
@@ -40,6 +51,13 @@ PARAMETERS = {
         "query": {"type": "string", "description": "For youtube: what the video is about or its title, e.g. 'Peppa Pig camping'. Can be empty when channel is set."},
         "channel": {"type": "string", "description": "For youtube: the channel name when the user names one, e.g. 'MrBeast'."},
         "latest": {"type": "boolean", "description": "For youtube: true for the newest / latest video."},
+        "title": {"type": "string", "description": "For play_film: the film's title in English (international title), e.g. 'Frozen' when the user says 'Холодное сердце'."},
+        "original_title": {"type": "string", "description": "For play_film: the title as the user said it, e.g. 'Крижане серце'."},
+        "russian_title": {"type": "string", "description": "For play_film: the film's Russian title (some files are named in Russian), e.g. 'Холодное сердце'."},
+        "year": {"type": "integer", "description": "For play_film: release year, only when the user names it or chose from options."},
+        "file": {"type": "string", "description": "For play_film: an exact file from earlier play_film options, when the user picked one."},
+        "search": {"type": "string", "description": "For browse: what to search for on the web, in the user's language, e.g. 'нові мультфільми 2026'."},
+        "url": {"type": "string", "description": "For browse: a website to open instead of a search, e.g. 'https://multiplex.ua'."},
     },
     "required": ["action"],
 }
@@ -95,9 +113,13 @@ def find_by_name(name: str, items: dict[str, str]) -> str | None:
 
 
 class TV:
-    def __init__(self, settings_path: str, find_video: Callable[[str], Awaitable[dict]] | None = None):
+    def __init__(self, settings_path: str, find_video: Callable[[str], Awaitable[dict]] | None = None,
+                 films_index: str = "", media_root: str = ""):
         self.path = settings_path
         self.find_video = find_video
+        self.films_index = films_index
+        self.media_root = media_root.rstrip("/")
+        self.turned_on_at = 0.0
         self._lock = asyncio.Lock()
 
     async def _connect(self, settings: dict[str, Any]):
@@ -156,11 +178,14 @@ class TV:
             await asyncio.sleep(2)
             if await self._is_on(settings):
                 log.info("tv: on after %.0f s", WAKE_SECONDS - (deadline - loop.time()))
+                self.turned_on_at = loop.time()
                 return {"result": "The TV is on."}
         return {"error": "The TV did not turn on."}
 
     async def _do(self, client, action: str, app: str = "", input: str = "", level: int | None = None,
-                  steps: int | None = None, query: str = "", channel: str = "", latest: bool = False) -> dict[str, Any]:
+                  steps: int | None = None, query: str = "", channel: str = "", latest: bool = False,
+                  title: str = "", original_title: str = "", russian_title: str = "", year: int | None = None,
+                  file: str = "", search: str = "", url: str = "") -> dict[str, Any]:
         state = client.tv_state
         if action == "status":
             return {"on": state.is_on, "app": state.current_app_id, "volume": state.volume, "muted": state.muted}
@@ -211,8 +236,64 @@ class TV:
                 return {"result": "Opened YouTube, but no matching video was found.", **video}
             await self._play_youtube(client, video["id"])
             log.info("tv: youtube %s (%s)", video["id"], video.get("title"))
-            return {"result": "Playing on YouTube.", **{k: v for k, v in video.items() if k != "id"}}
+            return {"result": "Playing on YouTube.", "note": WATCHING_NOTE,
+                    **{k: v for k, v in video.items() if k != "id"}}
+        if action == "browse":
+            return await self._browse(client, search, url)
+        if action == "play_film":
+            return await self._play_film(client, [title, original_title, russian_title], year, file)
         return {"error": f"unknown action {action}"}
+
+    async def _browse(self, client, search: str, url: str) -> dict[str, Any]:
+        if url and not re.match(r"^https?://", url):
+            url = "https://" + url
+        if not url:
+            if not search:
+                return {"error": "search or url is required"}
+            url = SEARCH_URL + quote_plus(search)
+        try:
+            await client.request("system.launcher/open", {"target": url})
+        except Exception as e:
+            log.info("tv: launcher open failed (%s); trying the browser app", e)
+            await client.launch_app_with_params(BROWSER_APP, {"target": url})
+        log.info("tv: browser %s", url)
+        return {"result": "Opened in the TV's browser.", "note": "Confirm in a few words. Do not read the address."}
+
+    async def _play_film(self, client, titles: list[str], year: int | None, file: str) -> dict[str, Any]:
+        library = films.load(self.films_index) if self.films_index else []
+        if not library:
+            return {"error": "There is no film list for the TV's disk yet."}
+        if file:
+            chosen = next((f for f in library if f.path == file), None)
+            if not chosen:
+                return {"error": "That file is not in the film list."}
+        else:
+            titles = [t for t in titles if t]
+            matches = films.find(library, titles, year)
+            if not matches:
+                log.info("tv: no film for %s", " / ".join(titles))
+                return {"result": "No such film on the disk.", "note": "Say so; do not offer YouTube unless asked."}
+            best_score, chosen = matches[0]
+            close = [f for s, f in matches if s >= best_score - CLEAR_LEAD]
+            if best_score < SURE_SCORE or len(close) > 1:
+                log.info("tv: film options for %s: %s", " / ".join(titles), ", ".join(f.path for _, f in matches))
+                return {
+                    "result": "Several films match. Ask the user which one (by title and year); then call "
+                              "play_film again with file set to the chosen one.",
+                    "options": [{"file": f.path, "title": f.title, "year": f.year} for _, f in matches],
+                }
+        wait = DISK_READY_SECONDS - (asyncio.get_running_loop().time() - self.turned_on_at)
+        if self.turned_on_at and wait > 0:
+            log.info("tv: waiting %.0f s for the disk after turning the TV on", wait)
+            await asyncio.sleep(wait)
+        path = f"{self.media_root}/{chosen.path}"
+        await client.launch_app_with_params(MEDIA_PLAYER_APP, {"payload": [{
+            "fullPath": path, "fileName": os.path.basename(path), "mediaType": "VIDEO", "deviceType": "usb",
+        }]})
+        log.info("tv: playing %s", chosen.path)
+        return {"result": "Playing on the TV.", "title": chosen.title, "year": chosen.year,
+                "note": WATCHING_NOTE + " If the user later says the TV cannot find the file, the disk may not be "
+                        "connected to the TV."}
 
 
     async def _play_youtube(self, client, video_id: str) -> None:
@@ -228,8 +309,9 @@ class TV:
         )
 
 
-def make_tool(settings_path: str, find_video: Callable[[str], Awaitable[dict]] | None = None) -> Tool | None:
+def make_tool(settings_path: str, find_video: Callable[[str], Awaitable[dict]] | None = None,
+              films_index: str = "", media_root: str = "/tmp/usb/sda/sda2") -> Tool | None:
     if not load_settings(settings_path):
         return None
-    tv = TV(settings_path, find_video)
+    tv = TV(settings_path, find_video, films_index, media_root)
     return Tool(name="tv", description=DESCRIPTION, parameters=PARAMETERS, handler=tv.run)

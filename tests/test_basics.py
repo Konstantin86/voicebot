@@ -80,7 +80,9 @@ def test_voice_display_name():
     from voicebot.settings import voice_display_name
 
     assert voice_display_name("marin") == "Marin"
-    assert voice_display_name("en-US-Ava:DragonHDLatestNeural") == "Ava"
+    assert voice_display_name("en-US-Ava:DragonHDLatestNeural") == "Ava HD"
+    assert voice_display_name("en-US-Andrew2:DragonHDLatestNeural") == "Andrew HD"
+    assert voice_display_name("en-US-Ava:DragonHDOmniLatestNeural") == "Ava Omni"
     assert voice_display_name("en-US-AndrewMultilingualNeural") == "Andrew"
 
 
@@ -917,7 +919,7 @@ def test_voice_previews_made_once_and_cached(tmp_path):
     assert asyncio.run(previews.get("marin")) == b"\x01\x02" * 10
     assert asyncio.run(previews.get("marin")) == b"\x01\x02" * 10
     asyncio.run(previews.prepare(["marin", "en-US-Ava:DragonHDLatestNeural"]))
-    assert said == [("Hi, I'm Marin.", "marin"), ("Hi, I'm Ava.", "en-US-Ava:DragonHDLatestNeural")]
+    assert said == [("Hi, I'm Marin.", "marin"), ("Hi, I'm Ava HD.", "en-US-Ava:DragonHDLatestNeural")]
 
 
 def test_voice_preview_failure_returns_none(tmp_path):
@@ -1157,3 +1159,123 @@ def test_auto_ria_cache_offset_damage_and_limit(monkeypatch):
     assert [a["price_usd"] for a in more["listings"]] == [20007, 20008, 20009, 20010]
     assert "hourly" in limited["error"] and "hourly" in blocked["error"]
     assert len(seen) == calls  # while blocked, no request is sent
+
+
+FILM_NAMES = [
+    "Cartoons/Moana (2016) BDRip 1080p [HEVC].mkv",
+    "Cartoons/Moana.2.2024.2160p.MA.WEB-DL.DV.HDR.TYMBLER.mkv",
+    "Cartoons/Moana.2026.MA.x265.WEB-DL.2160p.HDR-DV.mkv",
+    "Cartoons/Frozen II (2019) BDRip 1080p [HEVC].mkv",
+    "Cartoons/Frozen.2013.BDREMUX.2160p.HDR.seleZen.mkv",
+    "Cartoons/#02 Монстры на каникулах 2 (2015).mkv",
+    "Cartoons/#01 Монстры на каникулах (2012).mkv",
+    "Inception.2010.BDRip.1080p.Rus.Eng.mkv",
+    "Paddington.2.2017.TRIPLE.BDRip.1080p.-HELLYWOOD.mkv",
+    "Paddington.2014.1080p.BluRay.x264-LEONARDO_[scarabey.org].mkv",
+    "01. Трансформеры.mkv",
+    "Cartoons/1. Decpicable Me (2010) BDRip 1080p [HEVC].mkv",
+    "Black.Doves.S01.1080p.NF.WEB-DL.H.264-EniaHD/Black.Doves.S01E02.A.Little.Black.Dove.1080p.NF.WEB-DL.H.264-EniaHD.mkv",
+]
+
+
+def test_film_titles_parsed():
+    from voicebot.tools.films import parse
+
+    assert (parse(FILM_NAMES[0]).title, parse(FILM_NAMES[0]).year) == ("Moana", 2016)
+    assert parse(FILM_NAMES[1]).title == "Moana 2"
+    assert parse(FILM_NAMES[5]).title == "Монстры на каникулах 2"
+    assert parse(FILM_NAMES[10]).title == "Трансформеры"
+    assert parse(FILM_NAMES[8]).title == "Paddington 2"
+
+
+def test_film_find():
+    from voicebot.tools.films import find, parse
+
+    library = [parse(n) for n in FILM_NAMES]
+
+    def top(*titles, year=None):
+        return [f.path for _, f in find(library, list(titles), year)]
+
+    assert top("Inception", "Начало")[0] == "Inception.2010.BDRip.1080p.Rus.Eng.mkv"
+    assert top("Frozen", "Крижане серце", "Холодное сердце")[0] == "Cartoons/Frozen.2013.BDREMUX.2160p.HDR.seleZen.mkv"
+    assert top("Frozen 2")[0] == "Cartoons/Frozen II (2019) BDRip 1080p [HEVC].mkv"  # II = 2
+    assert top("Моана", "Moana", year=2016)[0] == FILM_NAMES[0]
+    assert top("Monsters on vacation", "Монстри на канікулах")[0] == FILM_NAMES[6]  # Ukrainian ~ Russian file name
+    assert top("Despicable Me")  # file is named "Decpicable Me" (typo)
+    moana = top("Moana")
+    assert set(moana[:2]) == {FILM_NAMES[0], FILM_NAMES[2]}  # two films called just "Moana": ask
+    assert top("Moana", year=2016)[0] == FILM_NAMES[0]
+    assert top("Moana 2")[0] == FILM_NAMES[1]
+    assert top("Hotel Transylvania", "Монстри на канікулах", "Монстры на каникулах")[0] == FILM_NAMES[6]
+    assert top("Paddington 2")[0] == FILM_NAMES[8]
+    assert top("Black Doves episode 2", "Black Doves S01E02") != []
+    assert top("Shrek") == []
+
+
+def test_tv_plays_film_or_asks(tmp_path):
+    import asyncio
+
+    from voicebot.tools.tv import TV
+
+    index = tmp_path / "films.tsv"
+    index.write_text("\n".join(f"{n}\t1" for n in FILM_NAMES), encoding="utf-8")
+    launched = []
+
+    async def launch(app, params):
+        launched.append(params["payload"][0]["fullPath"])
+
+    client = __import__("types").SimpleNamespace(launch_app_with_params=launch)
+    tv = TV("unused", films_index=str(index), media_root="/tmp/usb/sda/sda2")
+
+    asked = asyncio.run(tv._play_film(client, ["Moana", "Моана", ""], None, ""))
+    assert "options" in asked and not launched
+    played = asyncio.run(tv._play_film(client, ["Inception", "Начало", ""], None, ""))
+    assert played["title"] == "Inception"
+    assert launched == ["/tmp/usb/sda/sda2/Inception.2010.BDRip.1080p.Rus.Eng.mkv"]
+    picked = asyncio.run(tv._play_film(client, [], None, asked["options"][0]["file"]))
+    assert picked["result"] == "Playing on the TV." and len(launched) == 2
+
+
+def test_play_film_waits_for_disk_after_power_on(tmp_path, monkeypatch):
+    import asyncio
+
+    from voicebot.tools import tv as tv_module
+    from voicebot.tools.tv import TV
+
+    monkeypatch.setattr(tv_module, "DISK_READY_SECONDS", 0.3)
+    index = tmp_path / "films.tsv"
+    index.write_text("Inception.2010.BDRip.1080p.Rus.Eng.mkv\t1", encoding="utf-8")
+    times = []
+
+    async def launch(app, params):
+        times.append(asyncio.get_running_loop().time())
+
+    client = __import__("types").SimpleNamespace(launch_app_with_params=launch)
+    tv = TV("unused", films_index=str(index), media_root="/m")
+
+    async def run():
+        tv.turned_on_at = asyncio.get_running_loop().time()
+        out = await tv._play_film(client, ["Inception"], None, "")
+        return out, times[0] - tv.turned_on_at
+
+    out, waited = asyncio.run(run())
+    assert waited >= 0.29 and "end_session" in out["note"]
+
+
+def test_tv_browse():
+    import asyncio
+
+    from voicebot.tools.tv import TV
+
+    opened = []
+
+    async def request(uri, payload):
+        opened.append((uri, payload["target"]))
+
+    client = __import__("types").SimpleNamespace(request=request)
+    tv = TV("unused")
+    asyncio.run(tv._browse(client, "нові мультфільми 2026", ""))
+    asyncio.run(tv._browse(client, "", "multiplex.ua"))
+    assert opened[0] == ("system.launcher/open",
+                         "https://www.google.com/search?q=%D0%BD%D0%BE%D0%B2%D1%96+%D0%BC%D1%83%D0%BB%D1%8C%D1%82%D1%84%D1%96%D0%BB%D1%8C%D0%BC%D0%B8+2026")
+    assert opened[1][1] == "https://multiplex.ua"
