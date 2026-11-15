@@ -52,8 +52,9 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
      to nobody; follows speaker changes. A voice is never saved under another person's name.
    - ⬜ Children's voices are close to each other and to their mother's; watch the scores.
    - ⬜ Per-person language, kids mode, calendar.
-7. ⬜ **Telegram link:** conversation summaries on the phone; change voice, model or budget from the phone;
-   send a message from the phone to be read aloud at home (intercom).
+7. ✅ **Telegram link:** conversation summaries on the phone; change voice, model or budget from the phone;
+   send a message from the phone to be read aloud at home (intercom). Also "send me this to Telegram" by voice
+   (real links from search, car and OLX results), a daily spending limit and an evening digest.
 8. ⬜ **More of the home:** Wi-Fi lights and plugs (a WiZ bulb and an ESP device are already on the
    network), scenes like "movie mode" (TV on, lights down).
 9. ⬜ **Music and radio:** "play jazz radio". Mix the stream into the speaker output the bot already owns,
@@ -132,7 +133,7 @@ Status ⬜ unless marked. Numbers are for reference, not order.
   report, ask the bot from outside with the same memory.
 
 ## Suggested order
-Air raid alerts (B1) → Telegram (B15, B16) → TV sleep timer and continue watching (B5, B6)
+Air raid alerts (B1) → reminders for a person (B15) → TV sleep timer and continue watching (B5, B6)
 → morning brief (4) → deployment (12).
 
 ## Done so far

@@ -13,6 +13,7 @@ from typing import Any
 
 import aiohttp
 
+from ..links import LINKS
 from . import Tool
 from .matching import key_words, matches
 from .web_search import DailyLimit
@@ -122,6 +123,7 @@ def summarize(offer: dict) -> dict[str, Any]:
         "city": (location.get("city") or {}).get("name"),
         "posted": (offer.get("created_time") or "")[:10],
         "shop": bool(offer.get("business")),
+        "link": LINKS.add(offer.get("url"), offer.get("title")),
     }
 
 

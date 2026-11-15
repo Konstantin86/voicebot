@@ -1703,3 +1703,176 @@ def test_reminders_tool_add_list_cancel_and_finish(tmp_path):
     store.finished(store.items[0])  # one-off: removed with its audio
     assert [r.kind for r in store.items] == ["alarm"] and not (tmp_path / "reminders" / "1.pcm").exists()
     assert asyncio.run(tool.handler(action="cancel", id=2))["status"] == "cancelled" and store.items == []
+
+
+def _telegram_bot(tmp_path, owner=1, spoken=None):
+    import asyncio
+    import datetime as dt
+
+    from voicebot import telegram
+    from voicebot.settings import RuntimeSettings
+
+    sent = []
+
+    class FakeApi:
+        def call(self, method, **params):
+            sent.append((method, params))
+            return {}
+
+    async def announce(text, sender):
+        if spoken is not None:
+            spoken.append((sender, text))
+
+    settings = RuntimeSettings(str(tmp_path / "state.json"), ["marin", "cedar"], ["mini", "smart"])
+    home = telegram.Home(settings=settings, announce=announce, cost_today=lambda: 0.42,
+                         summaries=lambda day: [{"date": f"{day:%Y-%m-%d} 14:05", "people": ["Костя"],
+                                                 "summary": "The dog peed on the sofa."}],
+                         voice_name=str.title, known_names=lambda: ["Костя", "Алина"], basic_model="mini",
+                         over_budget=lambda: False)
+    bot = telegram.Bot(FakeApi(), telegram.Chats(str(tmp_path / "telegram.json"), owner), home, "21:00")
+    return bot, sent, settings, asyncio, dt
+
+
+def _texts(sent):
+    return [p["text"] for m, p in sent if m == "sendMessage"]
+
+
+def _msg(chat, text, date=None):
+    import time
+    return {"message": {"chat": {"id": chat, "type": "private"}, "from": {"first_name": "X"}, "text": text,
+                        "date": date or time.time()}}
+
+
+def test_telegram_stranger_gets_id_and_owner_is_told(tmp_path):
+    bot, sent, _, asyncio, _ = _telegram_bot(tmp_path)
+    asyncio.run(bot.handle(_msg(55, "hi")))
+    asyncio.run(bot.handle(_msg(55, "hi again")))
+    texts = _texts(sent)
+    assert len(texts) == 2 and "55" in texts[0] and "/allow 55" in texts[1]
+    assert [p["chat_id"] for m, p in sent] == [55, 1]
+
+
+def test_telegram_intercom_and_old_messages(tmp_path):
+    spoken = []
+    bot, sent, _, asyncio, _ = _telegram_bot(tmp_path, spoken=spoken)
+    bot.chats.allow(7, "Алина")
+    asyncio.run(bot.handle(_msg(7, "Ужин готов")))
+    asyncio.run(bot.handle(_msg(7, "Old one", date=1)))
+    assert spoken == [("Алина", "Ужин готов")]
+    assert "Read aloud" in _texts(sent)[0] and "offline" in _texts(sent)[1]
+
+
+def test_telegram_owner_settings(tmp_path):
+    bot, sent, settings, asyncio, _ = _telegram_bot(tmp_path)
+    asyncio.run(bot.handle(_msg(1, "/budget 2,5")))
+    assert settings.budget == 2.5
+    asyncio.run(bot.handle(_msg(1, "/voice")))
+    markup = sent[-1][1]["reply_markup"]["inline_keyboard"]
+    assert markup[0][1]["callback_data"] == "voice:1"
+    asyncio.run(bot.handle({"callback_query": {"id": "q", "data": "voice:1",
+                                               "message": {"chat": {"id": 1}, "message_id": 9}}}))
+    assert settings.voice == "cedar"
+    bot.chats.allow(7, "Алина")
+    asyncio.run(bot.handle(_msg(7, "/budget 100")))
+    assert settings.budget == 2.5 and "Only the owner" in _texts(sent)[-1]
+    asyncio.run(bot.handle(_msg(7, "/today")))
+    assert "dog peed" in _texts(sent)[-1] and "$0.42" in _texts(sent)[-1]
+
+
+def test_send_to_telegram_tool_picks_speaker_and_expands_links(tmp_path):
+    from voicebot import telegram
+    from voicebot.links import LINKS
+
+    bot, sent, _, asyncio, _ = _telegram_bot(tmp_path)
+    bot.chats.allow(7, "Алина")
+
+    class Current:
+        speaker = "Алина"
+
+    tool = telegram.send_tool(bot, Current())
+    ref = LINKS.add("https://example.com/car", "BMW X5 2019")
+    result = asyncio.run(tool.handler(text="Вот машина", links=[ref, "L99999"]))
+    assert result["status"] == "sent" and result["to"] == "Алина" and result["missing_links"] == ["L99999"]
+    assert sent[-1][1]["chat_id"] == 7 and "https://example.com/car" in sent[-1][1]["text"]
+    Current.speaker = "Вадик"
+    result = asyncio.run(tool.handler(text="hi"))
+    assert sent[-1][1]["chat_id"] == 1 and "Вадик has no Telegram" in result["note"]
+    assert asyncio.run(tool.handler(text="hi", to="Alina"))["to"] == "Alina"
+    assert "error" in asyncio.run(tool.handler(text="hi", to="Nastya"))
+
+
+def test_link_book_reuses_and_forgets():
+    from voicebot.links import LinkBook
+
+    book = LinkBook(keep=2)
+    a = book.add("https://a", "A")
+    assert book.add("https://a") == a and book.add(None) is None
+    book.add("https://b")
+    book.add("https://c")
+    assert book.get(a) is None and book.get(a.lower()) is None
+
+
+def test_daily_usage_survives_restart(tmp_path):
+    from voicebot.usage import DailyUsage
+
+    path = str(tmp_path / "usage.json")
+    first = DailyUsage(path)
+    first.add(0.5)
+    first.warned = True
+    first.save()
+    again = DailyUsage(path)
+    assert again.today() == 0.5 and again.warned
+
+
+def test_split_long_telegram_text():
+    from voicebot.telegram import split_text
+
+    parts = split_text("line\n" * 2000, limit=100)
+    assert all(len(p) <= 100 for p in parts) and "".join(parts).count("line") == 2000
+
+
+def test_telegram_reminders_list_next_and_past(tmp_path):
+    from datetime import datetime, timedelta
+
+    from voicebot import reminders, telegram
+
+    store = reminders.Reminders(str(tmp_path / "reminders.json"))
+    soon = store.add("alarm", datetime.now() + timedelta(hours=1), "Пора вставать", repeat="daily")
+    done = store.add("timer", datetime.now() + timedelta(minutes=1), "Макароны готовы")
+    store.finished(done)
+    store.finished(store.add("reminder", datetime.now() + timedelta(minutes=2), "Позвонить маме"), missed=True)
+    text = telegram.reminders_text(reminders.Reminders(str(tmp_path / "reminders.json")))
+    next_part, past_part = text.split("Past:")
+    assert "Пора вставать" in next_part and "every day" in next_part and soon.text not in past_part
+    assert past_part.index("Позвонить маме") < past_part.index("Макароны") and "missed" in past_part
+
+
+def test_telegram_menu_for_everyone_and_owner(tmp_path):
+    bot, sent, _, _, _ = _telegram_bot(tmp_path)
+    bot._set_menu()
+    menus = [p for m, p in sent if m == "setMyCommands"]
+    assert len(menus) == 2 and "scope" not in menus[0] and menus[1]["scope"]["chat_id"] == 1
+    assert {"reminders", "help"} <= {c["command"] for c in menus[0]["commands"]}
+    assert "budget" in {c["command"] for c in menus[1]["commands"]}
+
+
+def test_telegram_remove_reminder_by_button(tmp_path):
+    from datetime import datetime, timedelta
+
+    from voicebot import reminders
+
+    bot, sent, _, asyncio, _ = _telegram_bot(tmp_path)
+    store = reminders.Reminders(str(tmp_path / "reminders.json"))
+    bot.home.reminders = store
+    item = store.add("timer", datetime.now() + timedelta(minutes=5), "Макароны готовы", label="pasta")
+    bot.chats.allow(7, "Алина")
+    asyncio.run(bot.handle(_msg(7, "/reminders")))
+    button = sent[-1][1]["reply_markup"]["inline_keyboard"][0][0]
+    assert button["callback_data"] == f"cancel:{item.id}" and "pasta" in button["text"]
+    asyncio.run(bot.handle({"callback_query": {"id": "q", "data": button["callback_data"],
+                                               "message": {"chat": {"id": 7}, "message_id": 3}}}))
+    assert store.upcoming() == []
+    assert "Removed" in sent[-2][1]["text"] and "nothing set" in sent[-1][1]["text"]
+    asyncio.run(bot.handle({"callback_query": {"id": "q", "data": "cancel:1",
+                                               "message": {"chat": {"id": 99}, "message_id": 3}}}))
+    assert sent[-1][1].get("text") is None or "Removed" not in sent[-1][1].get("text", "")

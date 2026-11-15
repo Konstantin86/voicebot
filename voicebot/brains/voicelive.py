@@ -2,6 +2,7 @@ import asyncio
 import base64
 import collections
 import logging
+import os
 import time
 from typing import Any
 
@@ -42,7 +43,8 @@ def tool_output_item(call_id: str, output: str) -> FunctionCallOutputItem:
 class VoiceLiveBrain:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.today = DailyUsage()
+        state_file = getattr(cfg, "state_file", "")
+        self.today = DailyUsage(os.path.join(os.path.dirname(state_file), "usage.json") if state_file else None)
 
     async def run_session(self, s: SessionIO) -> None:
         usage = TokenTotals()

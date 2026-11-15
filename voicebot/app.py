@@ -11,13 +11,14 @@ from .audio import AudioIO
 from .brains import SessionIO, create_brain
 from .config import Config
 from .jabra import HookButtons, MediaKeys
+from .language import detect_language
 from .memory import Memory, with_people
 from .prompt import build_instructions
 from .settings import RuntimeSettings, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
 from .voice_preview import VoicePreviews
-from . import archive, reminders, speakers, wake
+from . import archive, reminders, speakers, telegram, wake
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ RING_SECONDS = {"alarm": 180, "timer": 60, "reminder": 0}  # how long it keeps r
 RING_PAUSE = 2.0
 MIN_CHARS_TO_SUMMARISE = 60
 DOUBLE_PRESS_SECONDS = 0.4
+INTERCOM_INTRO = {"Russian": "{name} пишет: ", "Ukrainian": "{name} пише: ", "English": "{name} writes: "}
 CUES = ("START", "END", "ERROR", "MODEL_BASIC", "MODEL_SMART", "THINKING", "REMINDER", "ALARM")
 
 
@@ -58,6 +60,19 @@ class App:
         self.tools.register(reminders.make_tool(
             self.reminders, self._reminder_audio if hasattr(self.brain, "say") else None))
         self._ring_stop: asyncio.Event | None = None
+        self.telegram = telegram.build(cfg.telegram_token, cfg.telegram_owner, cfg.telegram_file, telegram.Home(
+            settings=self.settings,
+            announce=self._announce,
+            cost_today=lambda: self.brain.today.today() if hasattr(self.brain, "today") else 0.0,
+            summaries=lambda day: self.archive.on_day(day) if self.archive else [],
+            voice_name=voice_display_name,
+            known_names=lambda: self.voices.names() if self.voices else [],
+            basic_model=cfg.model,
+            over_budget=self._over_budget,
+            reminders=self.reminders,
+        ), cfg.digest_time)
+        if self.telegram:
+            self.tools.register(telegram.send_tool(self.telegram, self.current_voice))
         self.cue = {
             name: cues.load_sound(name.lower(), cfg.speaker_rate) or cues.render(getattr(cues, name), cfg.speaker_rate)
             for name in CUES
@@ -99,6 +114,8 @@ class App:
                 await asyncio.to_thread(self.archive.add, when, names, summary, transcript)
             except Exception as e:
                 log.warning("archive: could not save a summary: %s", e)
+            finally:
+                self._check_budget()
 
         task = asyncio.create_task(run())
         self._background.add(task)
@@ -137,6 +154,9 @@ class App:
             self._on_button("toggle")
         reminder_task = asyncio.create_task(self._reminder_loop())
         self._background.add(reminder_task)
+        if self.telegram:
+            self.telegram.start(loop)
+            self._background.add(asyncio.create_task(self.telegram.digest_loop()))
         if self.previews:
             task = asyncio.create_task(self.previews.prepare(self.settings.voices))
             self._background.add(task)
@@ -144,6 +164,8 @@ class App:
 
         await self._shutdown.wait()
         log.info("shutting down")
+        if self.telegram:
+            self.telegram.stop()
         if self._session_task and not self._session_task.done():
             self._session_stop.set()
             with contextlib.suppress(Exception):
@@ -245,6 +267,60 @@ class App:
                 else:
                     self._start_session(greeting=f"Hi, I'm {voice_display_name(voice)}.")
 
+    def _over_budget(self) -> bool:
+        budget = self.settings.budget
+        return bool(budget) and hasattr(self.brain, "today") and self.brain.today.today() >= budget
+
+    def _session_model(self) -> str:
+        if self.settings.model != self.cfg.model and self._over_budget():
+            log.info("daily limit reached: using %s instead of %s", self.cfg.model, self.settings.model)
+            return self.cfg.model
+        return self.settings.model
+
+    def _check_budget(self) -> None:
+        """Once a day, when the estimated cost reaches the limit: warn the owner (the basic model is used)."""
+        if not self._over_budget() or self.brain.today.warned:
+            return
+        self.brain.today.warned = True
+        self.brain.today.save()
+        cost, budget = self.brain.today.today(), self.settings.budget
+        log.warning("daily limit reached: est. $%.2f of $%.2f", cost, budget)
+        if self.telegram:
+            switched = (" The basic model is used until midnight." if self.settings.model != self.cfg.model
+                        else " The bot already uses the basic model and keeps working.")
+            self._spawn(self.telegram.tell_owner(
+                f"Daily limit reached: about ${cost:.2f} of ${budget:.2f} today.{switched} Change it with /budget."))
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _announce(self, text: str, sender: str) -> None:
+        """A message from someone's phone, read aloud at home."""
+        if not hasattr(self.brain, "say"):
+            raise RuntimeError("this brain cannot speak a message")
+        intro = INTERCOM_INTRO[detect_language(text) or "Russian"].format(name=sender)
+        pcm = await self.brain.say(intro + text, self.settings.voice, self.cfg.model)
+        await self._play_aloud(self.cue["REMINDER"] + pcm)
+
+    async def _play_aloud(self, pcm: bytes) -> None:
+        if self._active():
+            while self.audio.is_playing():
+                await asyncio.sleep(0.1)
+            self.audio.play(pcm)
+            return
+        if self.wake:
+            self.wake.pause()  # the bot's own voice must not wake it
+        try:
+            self.audio.play(pcm)
+            while self.audio.is_playing():
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(PLAYBACK_TAIL)
+        finally:
+            if not self._active():
+                self._listen_for_wake_word()
+
     async def _reminder_audio(self, item: reminders.Reminder) -> None:
         try:
             pcm = await self.brain.say(item.text, self.settings.voice, self.cfg.model)
@@ -260,7 +336,7 @@ class App:
             for item in self.reminders.due_now(now):
                 if self.reminders.is_stale(item, now):
                     log.info("reminders: %s #%d was due long ago (Pi off?); skipping it", item.kind, item.id)
-                    self.reminders.finished(item)
+                    self.reminders.finished(item, missed=True)
                     continue
                 if self._dot_lock.locked():
                     break
@@ -343,10 +419,11 @@ class App:
                 cars="auto_ria" in self.tools.names(),
                 people=self.voices.names() if self.voices else None,
                 past=self.archive is not None,
+                telegram=self.telegram is not None,
             ),
             tools=self.tools,
             stop=stop,
-            model=self.settings.model,
+            model=self._session_model(),
             voice=self.settings.voice,
             greeting=greeting,
             thinking_sound=self.cue["THINKING"],
@@ -414,6 +491,7 @@ class App:
             await self._play_cue("ERROR" if failed else "END")
             self.memory.save_session(session.history, people=session.people)
             self._summarise_later(session.history, session.people)
+            self._check_budget()
             self.current_voice.session = None
             people = sorted(set(session.people.values()))
             if people:

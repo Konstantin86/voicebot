@@ -18,6 +18,7 @@ KINDS = ("timer", "reminder", "alarm")
 REPEATS = ("", "daily", "weekdays", "weekends")
 LATE_LIMIT = timedelta(minutes=30)  # a one-off missed by more than this (Pi was off) is dropped, not spoken
 FILE_MODE = 0o640
+HISTORY_KEEP = 50  # past reminders kept for the Telegram /reminders list
 
 
 @dataclass
@@ -98,7 +99,32 @@ class Reminders:
     def __init__(self, path: str):
         self.path = path
         self.audio_dir = os.path.join(os.path.dirname(path), "reminders")
+        self.history_path = os.path.join(os.path.dirname(path), "reminders_history.json")
         self.items: list[Reminder] = self._load()
+        self.history: list[dict] = self._load_history()
+
+    def _load_history(self) -> list[dict]:
+        try:
+            with open(self.history_path, encoding="utf-8") as f:
+                return list(json.load(f))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("reminders: cannot read %s: %s", self.history_path, e)
+            return []
+
+    def _remember(self, item: Reminder, missed: bool) -> None:
+        self.history.append({"kind": item.kind, "due": item.due, "text": item.text, "label": item.label,
+                             "repeat": item.repeat, "missed": missed})
+        self.history = self.history[-HISTORY_KEEP:]
+        try:
+            tmp = self.history_path + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.history_path)
+        except OSError as e:
+            log.warning("reminders: cannot save %s: %s", self.history_path, e)
 
     def _load(self) -> list[Reminder]:
         try:
@@ -142,8 +168,9 @@ class Reminders:
     def due_now(self, now: float) -> list[Reminder]:
         return [r for r in self.upcoming() if r.due <= now]
 
-    def finished(self, item: Reminder) -> None:
+    def finished(self, item: Reminder, missed: bool = False) -> None:
         """After it went off: a repeating one moves to its next day, a one-off is removed."""
+        self._remember(item, missed)
         if item.repeat:
             nxt = next_time(datetime.fromtimestamp(item.due), item.repeat)
             while nxt <= datetime.now():

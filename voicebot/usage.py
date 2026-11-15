@@ -1,7 +1,11 @@
 import datetime
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass, fields
+
+log = logging.getLogger(__name__)
 
 # USD per 1M tokens, OpenAI list prices. Override with env vars like PRICE_GPT_REALTIME_MINI_AUDIO_OUT=20.
 DEFAULT_PRICES = {
@@ -60,15 +64,51 @@ class TokenTotals:
 
 
 class DailyUsage:
-    """Estimated cost for the current day, kept in memory (resets when the service restarts)."""
+    """Estimated cost for the current day; saved to a file when a path is given, so a restart keeps it."""
 
-    def __init__(self) -> None:
+    def __init__(self, path: str | None = None) -> None:
+        self.path = path
         self.day = datetime.date.today()
         self.cost = 0.0
+        self.warned = False  # the daily limit warning was sent today
+        self._load()
 
-    def add(self, cost: float) -> float:
+    def _load(self) -> None:
+        if not self.path:
+            return
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("day") == self.day.isoformat():
+                self.cost = float(data.get("cost", 0.0))
+                self.warned = bool(data.get("warned"))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("usage: cannot read %s: %s", self.path, e)
+
+    def save(self) -> None:
+        if not self.path:
+            return
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"day": self.day.isoformat(), "cost": round(self.cost, 6), "warned": self.warned}, f)
+            os.replace(tmp, self.path)
+        except OSError as e:
+            log.warning("usage: cannot save %s: %s", self.path, e)
+
+    def _roll(self) -> None:
         today = datetime.date.today()
         if today != self.day:
-            self.day, self.cost = today, 0.0
+            self.day, self.cost, self.warned = today, 0.0, False
+
+    def today(self) -> float:
+        self._roll()
+        return self.cost
+
+    def add(self, cost: float) -> float:
+        self._roll()
         self.cost += cost
+        self.save()
         return self.cost

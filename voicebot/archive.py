@@ -133,6 +133,23 @@ class Archive:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         log.info("archive: saved summary of the conversation at %s: %s", payload["date"], summary)
 
+    def on_day(self, day: datetime.date) -> list[dict]:
+        """Summaries saved for conversations on that day, oldest first."""
+        prefix = day.strftime("%Y-%m-%d")
+        found = []
+        try:
+            with open(self.file, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if str(record.get("date", "")).startswith(prefix):
+                        found.append(record)
+        except FileNotFoundError:
+            pass
+        return sorted(found, key=lambda r: r.get("time", 0))
+
     def search(self, query: str, limit: int = 3) -> list[dict]:
         vector = self.embedder.embed([query], kind="query")[0]
         hits = [h for h in self.qdrant.search(vector, limit) if h.get("score", 0) >= MIN_SCORE]

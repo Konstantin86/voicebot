@@ -30,7 +30,7 @@ Timers, reminders and alarms:
 
 Time elsewhere:
 - For the time or date in another city or country, call world_time (never web search for it).
-
+{telegram}
 OLX (used and private listings):
 - When the user asks about OLX, used items, or "what's on OLX", call olx with action search.
   Set part_only when they want a component (graphics card, processor…), not a whole PC or laptop.
@@ -176,15 +176,23 @@ LANGUAGE_REMINDER = (
 )
 
 
+TELEGRAM = """
+Telegram:
+- "Send me this / скинь в телеграм / надішли в телеграм" -> send_to_telegram. Write the useful facts in text
+  (names, models, prices, cities) and pass the 'link' values of the items the user means in links.
+  Never say links aloud; say in a few words that it was sent.
+"""
+
+
 def build_instructions(
     context_file: str, now: datetime | None = None, web_search: bool = False, memory: str = "", cars: bool = False,
-    people: list[str] | None = None, past: bool = False,
+    people: list[str] | None = None, past: bool = False, telegram: bool = False,
 ) -> str:
     now = (now or datetime.now()).astimezone()
     parts = [
         BASE_INSTRUCTIONS.replace(
             "{knowledge}", (CARS + "\n" if cars else "") + (KNOWLEDGE_SEARCH if web_search else KNOWLEDGE_OFFLINE)
-        ),
+        ).replace("{telegram}", TELEGRAM if telegram else ""),
         f"Current local date and time: {now:%A, %d %B %Y, %H:%M} ({now.tzname()}).",
     ]
     try:

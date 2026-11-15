@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from ..links import LINKS
 from . import Tool
 from .matching import key_words, matches, prices_uah
 
@@ -119,7 +120,8 @@ def cheapest_offers(query: str, results: list[dict], limit: int = 5) -> list[dic
             continue
         prices = prices_uah(r.get("content") or "") + prices_uah(r.get("title") or "")
         if prices:
-            offers.append({"site": site_name(r.get("url")), "title": r.get("title"), "price_uah": min(prices)})
+            offers.append({"site": site_name(r.get("url")), "title": r.get("title"), "price_uah": min(prices),
+                           "link": LINKS.add(r.get("url"), r.get("title"))})
     offers.sort(key=lambda o: o["price_uah"])
     return offers[:limit]
 
@@ -194,6 +196,7 @@ def make_tool(
                     "title": r.get("title"),
                     "date": r.get("published_date"),
                     "snippet": (r.get("content") or "")[:MAX_SNIPPET_CHARS],
+                    "link": LINKS.add(r.get("url"), r.get("title")),
                 }
                 for r in results
             ],

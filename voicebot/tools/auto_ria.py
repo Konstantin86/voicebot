@@ -18,6 +18,7 @@ from typing import Any
 
 import aiohttp
 
+from ..links import LINKS
 from . import Tool
 from .web_search import DailyLimit
 
@@ -116,8 +117,11 @@ def summarize_ad(ad: dict) -> dict[str, Any]:
     data = ad.get("autoData") or {}
     state = ad.get("stateData") or {}
     race = data.get("raceInt")
+    title = " ".join(filter(None, [ad.get("markName"), ad.get("modelName"), str(data.get("year") or "")]))
+    page = ad.get("linkToView")
     return {
-        "title": " ".join(filter(None, [ad.get("markName"), ad.get("modelName"), str(data.get("year") or "")])),
+        "title": title,
+        "link": LINKS.add(f"https://auto.ria.com/uk{page}" if page else None, title),
         "price_usd": ad.get("USD"),
         "mileage_km": race * 1000 if isinstance(race, int) else None,
         "fuel": data.get("fuelName"),

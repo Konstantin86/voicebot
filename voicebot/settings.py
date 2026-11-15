@@ -14,6 +14,7 @@ class RuntimeSettings:
         self.models = models
         self.voice = voices[0]
         self.model = models[0]
+        self.budget = 0.0  # daily spending limit in dollars; 0 = none
         self._load()
 
     def _load(self) -> None:
@@ -29,12 +30,14 @@ class RuntimeSettings:
             self.voice = data["voice"]
         if data.get("model") in self.models:
             self.model = data["model"]
+        if isinstance(data.get("budget"), (int, float)) and data["budget"] >= 0:
+            self.budget = float(data["budget"])
 
     def _save(self) -> None:
         tmp = self.path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"voice": self.voice, "model": self.model}, f)
+                json.dump({"voice": self.voice, "model": self.model, "budget": self.budget}, f)
             os.replace(tmp, self.path)
         except OSError as e:
             log.warning("cannot save %s: %s", self.path, e)
@@ -43,6 +46,24 @@ class RuntimeSettings:
         self.voice = self.voices[(self.voices.index(self.voice) + 1) % len(self.voices)]
         self._save()
         return self.voice
+
+    def set_voice(self, voice: str) -> None:
+        if voice not in self.voices:
+            raise ValueError(f"unknown voice {voice!r}")
+        self.voice = voice
+        self._save()
+
+    def set_model(self, model: str) -> None:
+        if model not in self.models:
+            raise ValueError(f"unknown model {model!r}")
+        self.model = model
+        self._save()
+
+    def set_budget(self, dollars: float) -> None:
+        if dollars < 0:
+            raise ValueError("the limit cannot be negative")
+        self.budget = round(float(dollars), 2)
+        self._save()
 
     def toggle_model(self) -> str:
         self.model = self.models[(self.models.index(self.model) + 1) % len(self.models)]
