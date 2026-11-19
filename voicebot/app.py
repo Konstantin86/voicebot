@@ -14,7 +14,7 @@ from .jabra import HookButtons, MediaKeys
 from .language import detect_language
 from .memory import Memory, with_people
 from .prompt import build_instructions
-from .settings import RuntimeSettings, voice_display_name
+from .settings import RuntimeSettings, family, voice_display_name
 from .tools import default_registry
 from .tools.weather import home_from_context
 from .voice_preview import VoicePreviews
@@ -55,7 +55,15 @@ class App:
         self.archive = archive.build(cfg.models_dir, cfg.memory_dir, cfg.qdrant_url, cfg.qdrant_api_key)
         if self.archive:
             self.tools.register(archive.search_tool(self.archive))
-        self.settings = RuntimeSettings(cfg.state_file, cfg.voices, [cfg.model, cfg.smart_model])
+        models = [cfg.model, cfg.smart_model] + ([cfg.gptlive_model] if cfg.gptlive_model else [])
+        self.settings = RuntimeSettings(cfg.state_file, cfg.voices, models,
+                                        cfg.gptlive_voices if cfg.gptlive_model else None)
+        self.live_brain = None
+        if cfg.gptlive_model:
+            from .brains.gptlive import GptLiveBrain
+
+            self.live_brain = GptLiveBrain(cfg, self.brain.today, cfg.gptlive_model, cfg.gptlive_endpoint,
+                                           cfg.gptlive_api_key, cfg.gptlive_backend)
         self.reminders = reminders.Reminders(cfg.reminders_file)
         self.tools.register(reminders.make_tool(
             self.reminders, self._reminder_audio if hasattr(self.brain, "say") else None))
@@ -70,6 +78,7 @@ class App:
             basic_model=cfg.model,
             over_budget=self._over_budget,
             reminders=self.reminders,
+            apply_wake=lambda mode: self.wake.set_mode(mode) if self.wake else None,
         ), cfg.digest_time)
         if self.telegram:
             self.tools.register(telegram.send_tool(self.telegram, self.current_voice))
@@ -90,6 +99,10 @@ class App:
                 os.path.join(os.path.dirname(cfg.state_file), "voices"),
                 lambda text, voice: self.brain.say(text, voice, cfg.model),
             )
+        self.live_previews: VoicePreviews | None = None
+        if self.live_brain:
+            self.live_previews = VoicePreviews(os.path.join(os.path.dirname(cfg.state_file), "voices-live"),
+                                               self.live_brain.say)
         self._background: set[asyncio.Task] = set()
 
     def _summarise_later(self, history: list[tuple[str, str]], people: dict[int, str]) -> None:
@@ -136,6 +149,7 @@ class App:
             )
         self.audio.start()
         if self.wake:
+            self.wake.set_mode(self.settings.wake)
             self.wake.start()
             self._listen_for_wake_word()
         self.hook = HookButtons(self.cfg.jabra_name, from_thread)
@@ -158,9 +172,12 @@ class App:
             self.telegram.start(loop)
             self._background.add(asyncio.create_task(self.telegram.digest_loop()))
         if self.previews:
-            task = asyncio.create_task(self.previews.prepare(self.settings.voices))
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
+            async def prepare_all() -> None:
+                await self.previews.prepare(self.settings.voices_for(self.cfg.model))
+                if self.live_previews:  # once: about 2 minutes of GPT-Live, ~$0.08
+                    await self.live_previews.prepare(self.settings.voices_for(self.cfg.gptlive_model))
+
+            self._spawn(prepare_all())
 
         await self._shutdown.wait()
         log.info("shutting down")
@@ -258,7 +275,8 @@ class App:
             else:
                 voice = self.settings.next_voice()
                 log.info("voice switched to %s", voice)
-                clip = None if was_active or not self.previews else await self.previews.get(voice)
+                previews = self.live_previews if family(self.settings.model) == "live" else self.previews
+                clip = None if was_active or not previews else await previews.get(voice)
                 if clip:
                     # Between conversations, only let the new voice introduce itself; pressing
                     # again moves on to the next one.
@@ -301,7 +319,7 @@ class App:
         if not hasattr(self.brain, "say"):
             raise RuntimeError("this brain cannot speak a message")
         intro = INTERCOM_INTRO[detect_language(text) or "Russian"].format(name=sender)
-        pcm = await self.brain.say(intro + text, self.settings.voice, self.cfg.model)
+        pcm = await self.brain.say(intro + text, self.settings.voice_for(self.cfg.model), self.cfg.model)
         await self._play_aloud(self.cue["REMINDER"] + pcm)
 
     async def _play_aloud(self, pcm: bytes) -> None:
@@ -323,7 +341,7 @@ class App:
 
     async def _reminder_audio(self, item: reminders.Reminder) -> None:
         try:
-            pcm = await self.brain.say(item.text, self.settings.voice, self.cfg.model)
+            pcm = await self.brain.say(item.text, self.settings.voice_for(self.cfg.model), self.cfg.model)
             await asyncio.to_thread(self.reminders.save_audio, item, pcm)
         except Exception as e:
             log.warning("reminders: could not make the spoken text for #%d (will chime only): %s", item.id, e)
@@ -409,6 +427,8 @@ class App:
                 self.voices, lambda person: self.memory.prompt_text(person=person)
             )
         self.current_voice.session = voice_session
+        model = self._session_model()
+        brain = self.live_brain if self.live_brain and model == self.cfg.gptlive_model else self.brain
         session = SessionIO(
             mic=mic,
             speaker=self.audio,
@@ -423,8 +443,8 @@ class App:
             ),
             tools=self.tools,
             stop=stop,
-            model=self._session_model(),
-            voice=self.settings.voice,
+            model=model,
+            voice=self.settings.voice_for(model),
             greeting=greeting,
             thinking_sound=self.cue["THINKING"],
             voice_session=voice_session,
@@ -444,7 +464,7 @@ class App:
         session.touch()
         if not from_wake:
             forward_mic()
-        brain_task = asyncio.create_task(self.brain.run_session(session))
+        brain_task = asyncio.create_task(brain.run_session(session))
         stop_wait = asyncio.create_task(stop.wait())
         reason = "unknown"
         try:

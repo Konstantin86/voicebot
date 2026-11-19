@@ -190,6 +190,16 @@ class WakeListener(threading.Thread):
         self._last_wake = 0.0
         self._peak = 0.0
         self._peak_logged = time.monotonic()
+        self.use_english = True
+        self.use_russian = True
+
+    def set_mode(self, mode: str) -> None:
+        """'all': both phrases; 'russian': only "Привет, Джарвис"; 'off': the call button only."""
+        english = mode == "all"
+        if english and not self.use_english:
+            self._reset_requested.set()  # its audio history is stale
+        self.use_english, self.use_russian = english, mode in ("all", "russian")
+        log.info("wake: mode %s", mode)
 
     def feed(self, frame: bytes) -> None:
         """Called from the audio thread; never blocks."""
@@ -245,14 +255,14 @@ class WakeListener(threading.Thread):
                 return
 
     def _detect(self, frame: bytes) -> str | None:
-        if self.oww:
+        if self.oww and self.use_english:
             score = self.oww.feed(frame)
             if score is not None:
                 self._log_peak(score)
                 if score >= self.threshold:
                     log.info("wake: 'hey jarvis' score %.2f", score)
                     return "hey jarvis"
-        if self.vosk_phrase:
+        if self.vosk_phrase and self.use_russian:
             phrase = self.vosk_phrase.feed(frame)
             if phrase:
                 log.info("wake: '%s'", phrase)

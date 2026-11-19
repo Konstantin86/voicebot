@@ -57,6 +57,7 @@ TELEGRAM
 • /help: this guide.
 Owner only:
 • /voice, /model: change the bot's voice or model (buttons).
+• /wake: which wake words it listens for, or off (call button only).
 • /budget 2: daily spending limit in dollars (0 = none); at the limit the basic model is used until midnight.
 • /allow <id> <name>: let someone use this bot (name as their voice is saved). They get their id by messaging the bot.
 • /remove <id or name>, /people: who can use it."""
@@ -64,8 +65,11 @@ Owner only:
 COMMANDS = [("help", "Quick guide"), ("today", "Today's conversations and cost"),
             ("reminders", "Next and past reminders")]
 OWNER_COMMANDS = COMMANDS + [("voice", "Change the voice"), ("model", "Basic or smart model"),
+                             ("wake", "Wake word on or off"),
                              ("budget", "Daily spending limit"), ("people", "Who can use the bot"),
                              ("allow", "Add someone: /allow <id> <name>"), ("remove", "Remove someone")]
+WAKE_CHOICES = [("all", "Both: Привет Джарвис + Hey Jarvis"), ("russian", "Only Привет / Привіт Джарвис"),
+                ("off", "Off: call button only")]
 REPEAT_WORDS = {"daily": "every day", "weekdays": "on weekdays", "weekends": "at weekends"}
 PAST_SHOWN = 10
 
@@ -181,6 +185,7 @@ class Home:
     basic_model: str
     over_budget: Callable[[], bool]
     reminders: Any = None  # reminders.Reminders
+    apply_wake: Callable[[str], None] = lambda mode: None
 
 
 def split_text(text: str, limit: int = MAX_TEXT) -> list[str]:
@@ -232,6 +237,12 @@ def reminder_buttons(store) -> list[list[dict]] | None:
         when = datetime.datetime.fromtimestamp(r.due).strftime("%a %H:%M")
         rows.append([{"text": f"✖ {when} {r.label or r.text}"[:60], "callback_data": f"cancel:{r.id}"}])
     return rows or None
+
+
+def model_label(model: str, basic: str) -> str:
+    if model == basic:
+        return "Basic: "
+    return "Live (full duplex): " if model.startswith("gpt-live") else "Smart: "
 
 
 def parse_dollars(text: str) -> float:
@@ -394,11 +405,15 @@ class Bot:
         if command == "voice":
             buttons = [{"text": ("✓ " if v == settings.voice else "") + self.home.voice_name(v), "callback_data": f"voice:{i}"}
                        for i, v in enumerate(settings.voices)]
-            await self.send(chat, "Pick a voice:", [buttons[i:i + 2] for i in range(0, len(buttons), 2)])
+            await self.send(chat, f"Pick a voice for {settings.model}:", [buttons[i:i + 2] for i in range(0, len(buttons), 2)])
         elif command == "model":
-            buttons = [[{"text": ("✓ " if m == settings.model else "") + ("Basic: " if m == self.home.basic_model
-                         else "Smart: ") + m, "callback_data": f"model:{i}"}] for i, m in enumerate(settings.models)]
+            buttons = [[{"text": ("✓ " if m == settings.model else "") + model_label(m, self.home.basic_model) + m,
+                         "callback_data": f"model:{i}"}] for i, m in enumerate(settings.models)]
             await self.send(chat, "Pick a model:", buttons)
+        elif command == "wake":
+            buttons = [[{"text": ("✓ " if mode == settings.wake else "") + label, "callback_data": f"wake:{i}"}]
+                       for i, (mode, label) in enumerate(WAKE_CHOICES)]
+            await self.send(chat, "Wake word:", buttons)
         elif command == "budget":
             if not arg:
                 limit = f"${settings.budget:.2f} a day" if settings.budget else "no limit"
@@ -455,9 +470,15 @@ class Bot:
             if kind == "voice" and int(index) < len(settings.voices):
                 settings.set_voice(settings.voices[int(index)])
                 answer = f"Voice: {self.home.voice_name(settings.voice)}. Used from the next conversation."
+            elif kind == "wake" and int(index) < len(WAKE_CHOICES):
+                mode, label = WAKE_CHOICES[int(index)]
+                settings.set_wake(mode)
+                self.home.apply_wake(mode)
+                answer = f"Wake word: {label}."
             elif kind == "model" and int(index) < len(settings.models):
                 settings.set_model(settings.models[int(index)])
-                answer = f"Model: {settings.model}. Used from the next conversation."
+                answer = (f"Model: {settings.model}, voice {self.home.voice_name(settings.voice)}. "
+                          "Used from the next conversation. /voice lists this model's voices.")
                 if settings.model != self.home.basic_model and self.home.over_budget():
                     answer += " Today's limit is reached, so the basic model is used until midnight."
             log.info("telegram: %s", answer)

@@ -1876,3 +1876,312 @@ def test_telegram_remove_reminder_by_button(tmp_path):
     asyncio.run(bot.handle({"callback_query": {"id": "q", "data": "cancel:1",
                                                "message": {"chat": {"id": 99}, "message_id": 3}}}))
     assert sent[-1][1].get("text") is None or "Removed" not in sent[-1][1].get("text", "")
+
+
+def test_telegram_wake_mode_saved_and_applied(tmp_path):
+    from voicebot.settings import RuntimeSettings
+
+    bot, sent, settings, asyncio, _ = _telegram_bot(tmp_path)
+    applied = []
+    bot.home.apply_wake = applied.append
+    asyncio.run(bot.handle(_msg(1, "/wake")))
+    rows = sent[-1][1]["reply_markup"]["inline_keyboard"]
+    assert rows[0][0]["text"].startswith("✓") and rows[1][0]["callback_data"] == "wake:1"
+    asyncio.run(bot.handle({"callback_query": {"id": "q", "data": "wake:1",
+                                               "message": {"chat": {"id": 1}, "message_id": 2}}}))
+    assert applied == ["russian"] and settings.wake == "russian"
+    assert RuntimeSettings(str(tmp_path / "state.json"), ["marin"], ["mini"]).wake == "russian"
+
+
+def test_wake_listener_modes():
+    from voicebot.wake import WakeListener
+
+    class Detector:
+        def __init__(self, result):
+            self.result, self.fed = result, 0
+
+        def feed(self, frame):
+            self.fed += 1
+            return self.result
+
+    english, russian = Detector(0.99), Detector(None)
+    listener = WakeListener(lambda name: None, english, russian)
+    assert listener._detect(b"x") == "hey jarvis"
+    listener.set_mode("russian")
+    assert listener._detect(b"x") is None and english.fed == 1 and russian.fed == 1
+    listener.set_mode("off")
+    assert listener._detect(b"x") is None and russian.fed == 1
+
+
+def test_settings_keep_a_voice_per_model_family(tmp_path):
+    from voicebot.settings import RuntimeSettings
+
+    path = str(tmp_path / "state.json")
+    s = RuntimeSettings(path, ["marin", "cedar"], ["mini", "smart", "gpt-live-1"], ["marin", "quartz", "ripple"])
+    s.set_voice("cedar")
+    s.set_model("gpt-live-1")
+    assert s.voices == ["marin", "quartz", "ripple"] and s.voice == "marin"
+    s.set_voice("quartz")
+    assert s.voice_for("mini") == "cedar" and s.voice_for("gpt-live-1") == "quartz"
+    again = RuntimeSettings(path, ["marin", "cedar"], ["mini", "smart", "gpt-live-1"], ["marin", "quartz", "ripple"])
+    assert again.model == "gpt-live-1" and again.voice == "quartz" and again.voice_for("smart") == "cedar"
+    plain = RuntimeSettings(str(tmp_path / "other.json"), ["marin"], ["mini"])
+    assert plain.voice == "marin" and plain.voices == ["marin"]
+
+
+def test_gptlive_helpers():
+    import numpy as np
+
+    from voicebot.brains.gptlive import Resampler, backend_cost, chunks, live_url
+
+    assert live_url("https://kosti-x-swedencentral.cognitiveservices.azure.com/") == \
+        "wss://kosti-x-swedencentral.openai.azure.com/openai/v1/live/sessions"
+    assert live_url("https://a.openai.azure.com") == "wss://a.openai.azure.com/openai/v1/live/sessions"
+    resample = Resampler(16000)
+    out = b"".join(resample(np.full(320, 1000, dtype=np.int16).tobytes()) for _ in range(50))
+    assert abs(len(out) // 2 - 24000) <= 2 and set(np.frombuffer(out, dtype=np.int16)[10:]) == {1000}
+    assert all(len(p) <= 100 for p in chunks("word " * 200, 100)) and chunks("") == []
+    usage = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400}, "output_tokens": 100}
+    assert round(backend_cost("gpt-5-mini", usage), 8) == round((600 * 0.25 + 400 * 0.025 + 100 * 2.0) / 1e6, 8)
+
+
+def test_gptlive_runs_backend_function_calls_and_continues(tmp_path):
+    import asyncio
+    import json
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import GptLiveBrain, _State
+    from voicebot.tools import Tool, ToolRegistry
+    from voicebot.usage import DailyUsage
+
+    class Speaker:
+        mic_rate = 16000
+
+        def play(self, pcm):
+            pass
+
+        def clear(self):
+            pass
+
+        def is_playing(self):
+            return False
+
+    registry = ToolRegistry()
+    registry.register(Tool("weather", "w", {"type": "object", "properties": {}}, lambda location="": {"t": 5}))
+    s = SessionIO(mic=None, speaker=Speaker(), instructions="hi", tools=registry, stop=None, model="gpt-live-1",
+                  voice="marin")
+    brain = GptLiveBrain(None, DailyUsage(), "gpt-live-1", "https://x.cognitiveservices.azure.com", "k", "gpt-5-mini")
+    sent = []
+
+    class FakeWs:
+        closed = False
+
+        async def send_str(self, text):
+            sent.append(json.loads(text))
+
+    async def main():
+        state = _State(s)
+        state.ws = FakeWs()
+        config = brain._session_config(s)
+        assert config["delegation"]["responses"]["tools"][0]["name"] == "weather"
+        await brain._on_backend(state, "d1", {"type": "response.output_item.done", "item": {
+            "type": "function_call", "call_id": "c1", "name": "weather", "arguments": '{"location": "Kyiv"}'}})
+        await brain._on_backend(state, "d1", {"type": "response.completed", "response": {
+            "usage": {"input_tokens": 100, "output_tokens": 10}}})
+        await asyncio.gather(*state.background)
+        return state
+
+    state = asyncio.run(main())
+    assert [e["type"] for e in sent] == ["response.item.create", "response.create"]
+    assert sent[0]["item"]["call_id"] == "c1" and json.loads(sent[0]["item"]["output"])["t"] == 5
+    assert state.backend_cost > 0
+
+
+def test_gptlive_pieces_transcript_fragments_into_turns():
+    import time
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import GptLiveBrain, _State
+    from voicebot.usage import DailyUsage
+
+    class Speaker:
+        mic_rate = 16000
+
+        def is_playing(self):
+            return False
+
+    s = SessionIO(mic=None, speaker=Speaker(), instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    brain = GptLiveBrain(None, DailyUsage(), "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")
+    state = _State(s)
+    for piece in ["Привет, ", "как дела?"]:
+        state.user.add({"delta": piece})
+    brain._finish_turns(state)
+    assert s.history == []
+    state.user.last = time.monotonic() - 5
+    brain._finish_turns(state)
+    state.bot.add({"delta": "Отлично. Пока!"})
+    brain._finish_turns(state, force=True)
+    assert s.history == [("user", "Привет, как дела?"), ("assistant", "Отлично. Пока!")]
+    assert state.language == "Russian"
+
+
+def test_goodbye_at_the_end_of_a_longer_turn():
+    from voicebot.goodbye import is_goodbye
+
+    assert is_goodbye("Да, да, добре, я зрозумів. Добре, все зрозуміло, тоді бувай")
+    assert is_goodbye("Okay, I got it. Thanks, bye!")
+    assert not is_goodbye("Скажи, какая погода будет завтра, пока я одеваюсь")
+    assert not is_goodbye("Расскажи сказку. Пока не надо про драконов?")
+
+
+def test_gptlive_hangs_up_when_nobody_talks_to_it():
+    import time
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import NOT_ADDRESSED_SECONDS, GptLiveBrain, _State
+
+    s = SessionIO(mic=None, speaker=None, instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    state = _State(s)
+    now = time.monotonic()
+    state.last_bot_activity = now - NOT_ADDRESSED_SECONDS - 1
+    assert not GptLiveBrain._not_addressed(state, now)  # nobody spoke since: plain silence is the app's job
+    state.user.last = now - 0.5
+    assert GptLiveBrain._not_addressed(state, now)
+    state.last_bot_activity = now - 5
+    assert not GptLiveBrain._not_addressed(state, now)
+
+
+def test_gptlive_silent_audio_is_not_activity():
+    import numpy as np
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import GptLiveBrain, _State, is_silent
+
+    played = []
+
+    class Speaker:
+        def play(self, pcm):
+            played.append(pcm)
+
+    s = SessionIO(mic=None, speaker=Speaker(), instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    state = _State(s)
+    quiet = np.zeros(2400, dtype=np.int16).tobytes()
+    loud = (np.sin(np.arange(2400) / 5) * 3000).astype(np.int16).tobytes()
+    assert is_silent(quiet) and not is_silent(loud)
+    brain = GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")
+    before = state.last_bot_activity
+    brain._play(state, {"delta": __import__("base64").b64encode(quiet).decode()})
+    assert played == [] and state.last_bot_activity == before and not s.engaged
+    brain._play(state, {"delta": __import__("base64").b64encode(loud).decode()})
+    assert played == [loud] and s.engaged and state.spoken_seconds == 0.1
+
+
+def test_gptlive_reminds_it_to_delegate_when_it_only_says_it_is_checking():
+    import asyncio
+    import json
+    import time
+
+    from voicebot.brains import gptlive
+    from voicebot.brains.base import SessionIO
+
+    class Speaker:
+        def is_playing(self):
+            return False
+
+    s = SessionIO(mic=None, speaker=Speaker(), instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    brain = gptlive.GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")
+    sent = []
+
+    class FakeWs:
+        async def send_str(self, text):
+            sent.append(json.loads(text))
+
+    async def main(delegate):
+        state = gptlive._State(s)
+        state.ws = FakeWs()
+        state.user.add({"delta": "What's the weather?"})
+        brain._finish_user(state)
+        state.bot.add({"delta": "Sure, just a sec."})
+        state.bot.first = time.monotonic() - gptlive.NUDGE_SECONDS
+        brain._finish_bot(state)
+        if delegate:
+            state.last_tool_call = time.monotonic()
+        await asyncio.gather(*state.background)
+
+    asyncio.run(main(delegate=False))
+    assert [e["type"] for e in sent] == ["session.instructions.append"]
+    sent.clear()
+    asyncio.run(main(delegate=True))
+    assert sent == []
+
+
+def test_gptlive_backend_thinks_little():
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import GptLiveBrain
+
+    s = SessionIO(mic=None, speaker=None, instructions="x", tools=None, stop=None, model="gpt-live-1", voice="m")
+    config = GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")._session_config(s)
+    assert config["delegation"]["responses"]["reasoning"] == {"effort": "low"}
+    other = GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-4.1-mini")._session_config(s)
+    assert "reasoning" not in other["delegation"]["responses"]
+
+
+def test_gptlive_backend_text():
+    from voicebot.brains.gptlive import backend_text
+
+    response = {"output": [{"type": "reasoning"}, {"type": "message", "content": [
+        {"type": "output_text", "text": "Сегодня в кино идёт «Аватар»."}]}]}
+    assert backend_text(response) == "Сегодня в кино идёт «Аватар»." and backend_text({}) == ""
+
+
+def test_gptlive_hangs_up_after_its_own_goodbye():
+    import time
+
+    from voicebot.brains.base import SessionIO
+    from voicebot.brains.gptlive import GptLiveBrain, _State
+
+    s = SessionIO(mic=None, speaker=None, instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    state = _State(s)
+    brain = GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")
+    state.bot.add({"delta": "Есть сеансы в 18:00."})
+    brain._finish_bot(state)
+    assert not state.goodbye_at
+    state.bot.add({"delta": "Окей. Пока!"})
+    brain._finish_bot(state)
+    assert 0 < state.goodbye_at <= time.monotonic()
+
+
+def test_gptlive_no_reminder_when_the_backend_answered_without_tools():
+    import asyncio
+    import json
+    import time
+
+    from voicebot.brains import gptlive
+    from voicebot.brains.base import SessionIO
+
+    class Speaker:
+        def is_playing(self):
+            return False
+
+    s = SessionIO(mic=None, speaker=Speaker(), instructions="", tools=None, stop=None, model="gpt-live-1", voice="m")
+    brain = gptlive.GptLiveBrain(None, None, "gpt-live-1", "https://x.openai.azure.com", "k", "gpt-5-mini")
+    sent = []
+
+    class FakeWs:
+        async def send_str(self, text):
+            sent.append(json.loads(text))
+
+    async def main():
+        state = gptlive._State(s)
+        state.ws = FakeWs()
+        state.user.add({"delta": "Умножь 233 на 147"})
+        brain._finish_user(state)
+        state.bot.add({"delta": "Секунду, посчитаю."})
+        state.bot.first = time.monotonic() - gptlive.NUDGE_SECONDS
+        brain._finish_bot(state)
+        await brain._on_backend(state, "d", {"type": "response.output_text.delta", "delta": "34 251"})
+        await brain._on_backend(state, "d", {"type": "response.completed", "response": {}})
+        await asyncio.gather(*state.background)
+
+    asyncio.run(main())
+    assert sent == []

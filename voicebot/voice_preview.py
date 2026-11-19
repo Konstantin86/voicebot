@@ -35,7 +35,7 @@ class VoicePreviews:
         try:
             clip = await self.say(f"Hi, I'm {voice_display_name(voice)}.", voice)
         except Exception as e:
-            log.warning("voice preview for %s failed: %s", voice, e)
+            log.warning("voice preview for %s failed: %s", voice, e or repr(e))
             return None
         if not clip:
             return None
@@ -51,6 +51,8 @@ class VoicePreviews:
         return clip
 
     async def prepare(self, voices: list[str]) -> None:
+        """Makes the missing clips; stops at the first failure (each try may cost money)."""
         for voice in voices:
-            if not self.cached(voice):
-                await self.get(voice)
+            if not self.cached(voice) and not await self.get(voice):
+                log.warning("voice previews: stopped preparing after a failure")
+                return

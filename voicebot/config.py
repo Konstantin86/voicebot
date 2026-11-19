@@ -72,6 +72,11 @@ class Config:
     telegram_owner: int
     telegram_file: str
     digest_time: str
+    gptlive_model: str
+    gptlive_endpoint: str
+    gptlive_api_key: str
+    gptlive_backend: str
+    gptlive_voices: list[str]
     weather_detect_home: bool
     memory_recent_hours: float
     memory_recent_turns: int
@@ -120,6 +125,11 @@ class Config:
             telegram_owner=int(_env("TELEGRAM_OWNER_ID", "0") or 0),
             telegram_file=_env("TELEGRAM_FILE", "/var/lib/voicebot/telegram.json"),
             digest_time=_env("DIGEST_TIME", "21:00"),
+            gptlive_model=_env("GPTLIVE_MODEL"),
+            gptlive_endpoint=_env("GPTLIVE_ENDPOINT") or _env("AZURE_VOICELIVE_ENDPOINT"),
+            gptlive_api_key=_env("GPTLIVE_API_KEY") or _env("AZURE_VOICELIVE_API_KEY"),
+            gptlive_backend=_env("GPTLIVE_BACKEND", "gpt-5-mini"),
+            gptlive_voices=[v.strip() for v in _env("GPTLIVE_VOICES", "marin,quartz,ripple,vesper,willow,stone,gleam,meridian,bossa,tempo,beacon,delta,cinder,nuri,juni,flitz,brise,sillage,nira,harema,shida,noeul").split(",") if v.strip()],
             weather_detect_home=_env_bool("WEATHER_DETECT_HOME", True),
             memory_recent_hours=float(_env("MEMORY_RECENT_HOURS", "12")),
             memory_recent_turns=int(_env("MEMORY_RECENT_TURNS", "80")),

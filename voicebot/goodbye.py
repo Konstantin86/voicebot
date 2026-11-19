@@ -22,6 +22,7 @@ FILLER = {
     "yeah", "yes", "fine", "good", "very", "much", "now", "for", "and",
     "спасибо", "благодарю", "ну", "ладно", "хорошо", "окей", "да", "тогда", "отлично", "понял", "поняла",
     "дякую", "добре", "гаразд", "так", "тоді", "чудово", "зрозумів", "зрозуміла", "ага", "и", "і", "ще", "раз",
+    "понятно", "зрозуміло",
 }
 _PHRASES = sorted((p.split() for p in PHRASES), key=len, reverse=True)
 
@@ -32,8 +33,15 @@ def normalize(text: str) -> list[str]:
 
 
 def is_goodbye(text: str) -> bool:
-    """True when the utterance is only goodbye phrases plus polite filler words, e.g.
-    "Thank you, that's it." or "Всё, спасибо, пока!". Anything with real content is not a goodbye."""
+    """True when the utterance, or its last part, is only goodbye phrases plus polite filler words, e.g.
+    "Thank you, that's it.", "Всё, спасибо, пока!" or "Добре, все зрозуміло, тоді бувай"."""
+    if _only_goodbye(text):
+        return True
+    parts = [p for p in re.split(r"[.,!;:—–\n]+", text) if p.strip()]
+    return len(parts) > 1 and _only_goodbye(parts[-1])
+
+
+def _only_goodbye(text: str) -> bool:
     if "?" in text:
         return False
     words = normalize(text)

@@ -153,6 +153,9 @@ Air raid alerts (B1) → reminders for a person (B15) → TV sleep timer and con
 
 - ✅ Dot button between conversations: plays the next voice saying its name, no session started.
 - ✅ OLX and AUTO.RIA search; MAI Transcribe; better Russian/Ukrainian detection.
+- ✅ GPT-Live (gpt-live-1, full duplex) as an optional third model: tools through a gpt-5-mini backend,
+  its own voices with spoken samples, hangs up after goodbye or 30 s of talk not meant for it.
+- ✅ Wake word mode from Telegram (/wake): both phrases, Russian/Ukrainian only, or off.
 
 ## Still open from earlier
 - Speech style: answer first, no repeated question, no stock "let me know" endings; keep checking by ear.
@@ -162,3 +165,5 @@ Air raid alerts (B1) → reminders for a person (B15) → TV sleep timer and con
 - Film list: rebuild with deploy/index_films.sh when films are added (disk on the Pi for a moment).
 - Qdrant (klai_qdrant container) listens on all addresses with no API key; bind it to 127.0.0.1 or add a key.
 - The small model sometimes fills gaps after an empty web search (e.g. a wrong flight route); accepted for now.
+- GPT-Live: about $0.05/min (2x the mini model); sometimes says "let me check" without delegating (a reminder
+  covers it); may mix in recent conversations from memory. Keep watching the logs.
